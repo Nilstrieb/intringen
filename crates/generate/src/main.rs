@@ -76,7 +76,7 @@ fn main() -> Result<()> {
     let list = list
         .into_iter()
         .filter(|intr| intr.cpuid.iter().any(|cpu| !cpu.value.contains("AVX512")))
-        .filter(|intr| intr.name == "_mm_packus_epi16")
+        .filter(|intr| INTRINSICS_GENERATE.contains(&intr.name.as_str()))
         .collect::<Vec<_>>();
 
     eprintln!("filtered: {}", list.len());
@@ -85,3 +85,5 @@ fn main() -> Result<()> {
 
     Ok(())
 }
+
+const INTRINSICS_GENERATE: &[&str] = &["_mm_packus_epi16", "_mm_setr_epi16"];

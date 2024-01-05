@@ -6,23 +6,72 @@ use eyre::{bail, Context, OptionExt, Result};
 
 pub fn generate(intrinsics: &[Intrinsic]) -> Result<()> {
     println!("impl<C: super::Core> Intrinsics for C {{}}");
-    println!("trait Intrinsics: super::Core {{");
+    println!("pub trait Intrinsics: super::Core {{");
     for intr in intrinsics {
         generate_intr(intr).wrap_err_with(|| format!("generating `{}`", intr.name))?;
     }
 
     println!("}}");
 
+    println!();
+    generate_soft_arch_module(intrinsics).context("generating soft_arch module")?;
+
+    Ok(())
+}
+
+fn generate_soft_arch_module(intrinsics: &[Intrinsic]) -> Result<()> {
+    println!("pub mod soft_arch {{");
+    println!("    pub use super::super::soft_arch_types::*;");
+    println!("    use super::Intrinsics;");
+
+    for intr in intrinsics {
+        generate_intr_soft_arch_wrap(intr)
+            .wrap_err_with(|| format!("generating soft_arch `{}`", intr.name))?;
+    }
+
+    println!("}}");
     Ok(())
 }
 
 fn generate_intr(intr: &Intrinsic) -> Result<(), eyre::Error> {
+    eprintln!("generating {}...", intr.name);
     let signature = signature(intr)?;
     println!("    {signature} {{");
     let body = generate_body(intr).wrap_err("generating body")?;
     println!("{}", indent(&body, 8));
     println!("    }}");
     Ok(())
+}
+
+fn generate_intr_soft_arch_wrap(intr: &Intrinsic) -> Result<(), eyre::Error> {
+    eprintln!("generating soft_arch wrapper {}...", intr.name);
+    let signature = signature_soft_arch(intr)?;
+    println!("    {signature} {{");
+    let body = generate_body_soft_arch(intr).wrap_err("generating body")?;
+    println!("{}", indent(&body, 8));
+    println!("    }}");
+    Ok(())
+}
+
+fn generate_body_soft_arch(intr: &Intrinsic) -> Result<String> {
+    let mut rust_stmts = Vec::<String>::new();
+
+    rust_stmts.push("let mut output = unsafe { std::mem::zeroed() };".into());
+
+    let name = &intr.name;
+    let args = intr
+        .parameter
+        .iter()
+        .map(|param| param.varname.as_deref().ok_or_eyre("parameter has no name"))
+        .collect::<Result<Vec<_>>>()?
+        .join(", ");
+    rust_stmts.push(format!(
+        "super::super::ValueCore.{name}(&mut output, {args});"
+    ));
+
+    rust_stmts.push("output".into());
+
+    Ok(rust_stmts.join("\n"))
 }
 
 fn indent(input: &str, indent: usize) -> String {
@@ -34,6 +83,7 @@ fn indent(input: &str, indent: usize) -> String {
 
 struct VariableType {
     is_signed: bool,
+    rawtype_signed: bool,
     elem_width: u64,
     #[allow(dead_code)]
     full_width: u64,
@@ -42,20 +92,23 @@ struct VariableType {
 
 impl VariableType {
     fn of(etype: &str, ty: &str) -> Result<Self> {
-        let full_width = match ty {
-            "__m128i" => 128,
+        let (rawtype_signed, full_width) = match map_type_to_rust(ty) {
+            "__m128i" => (false, 128),
+            "i16" => (true, 16),
             _ => bail!("unknown type: {ty}"),
         };
         let (is_signed, elem_width) = match etype {
             "SI16" => (true, 16),
             "UI8" => (false, 8),
+            "UI16" => (false, 16),
             _ => bail!("unknown element type: {etype}"),
         };
         Ok(Self {
             is_signed,
+            rawtype_signed,
             full_width,
             elem_width,
-            raw_type: ty.to_owned(),
+            raw_type: map_type_to_rust(ty).to_owned(),
         })
     }
 
@@ -144,7 +197,18 @@ fn generate_expr_tmp(
 ) -> Result<String> {
     let result = match expr {
         Expr::Int(int) => int.to_string(),
-        Expr::Ident(_) => todo!(),
+        Expr::Ident(ident) => {
+            let ty = type_of_ident(&ident)?;
+            if ty.is_signed != ty.rawtype_signed {
+                let from = &ty.raw_type;
+                let to = ty.rust_type();
+                let stmt = format!("let __tmp = self.cast_sign_{from}_{to}({ident});");
+                rust_stmts.push(stmt);
+                "__tmp".into()
+            } else {
+                ident
+            }
+        }
         Expr::Index { lhs, idx } => {
             let Expr::Ident(ident) = *lhs else {
                 bail!("lhs of indexing must be identifier");
@@ -215,16 +279,44 @@ fn signature(intr: &Intrinsic) -> Result<String> {
             format!(
                 "{}: Self::{}",
                 param.varname.as_ref().unwrap(),
-                param.r#type.as_ref().unwrap()
+                map_type_to_rust(param.r#type.as_ref().unwrap())
             )
         })
         .collect::<Vec<_>>()
         .join(", ");
 
     let ret_name = intr.ret.varname.as_ref().unwrap();
-    let ret_ty = intr.ret.r#type.as_ref().unwrap();
+    let ret_ty = map_type_to_rust(intr.ret.r#type.as_ref().unwrap());
 
     Ok(format!(
         "fn {name}(&mut self, {ret_name}: &mut Self::{ret_ty}, {args})"
     ))
+}
+
+fn signature_soft_arch(intr: &Intrinsic) -> Result<String> {
+    let name = &intr.name;
+
+    let args = intr
+        .parameter
+        .iter()
+        .map(|param| {
+            format!(
+                "{}: {}",
+                param.varname.as_ref().unwrap(),
+                map_type_to_rust(param.r#type.as_ref().unwrap())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let ret_ty = map_type_to_rust(intr.ret.r#type.as_ref().unwrap());
+
+    Ok(format!("pub fn {name}({args}) -> {ret_ty}"))
+}
+
+fn map_type_to_rust(ty: &str) -> &str {
+    match ty {
+        "short" => "i16",
+        ty => ty,
+    }
 }
