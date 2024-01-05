@@ -81,7 +81,9 @@ fn main() -> Result<()> {
 
     eprintln!("filtered: {}", list.len());
 
-    generate::generate(&list).wrap_err("generating rust code")?;
+    let generated_mod = generate::generate(&list).wrap_err("generating rust code")?;
+
+    println!("{}", prettyplease::unparse(&generated_mod));
 
     Ok(())
 }

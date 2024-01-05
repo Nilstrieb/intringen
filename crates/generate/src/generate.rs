@@ -5,153 +5,178 @@ use crate::{
 use eyre::{bail, Context, OptionExt, Result};
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 
-pub fn generate(intrinsics: &[Intrinsic]) -> Result<()> {
-    println!("impl<C: super::Core> Intrinsics for C {{}}");
-    println!("pub trait Intrinsics: super::Core {{");
+pub fn generate(intrinsics: &[Intrinsic]) -> Result<syn::File> {
+    let blanket: syn::ItemImpl = syn::parse_quote! {
+        impl<C: super::Core> Intrinsics for C {}
+    };
+
+    let mut trait_def: syn::ItemTrait = syn::parse_quote! {
+        pub trait Intrinsics: super::Core {}
+    };
     for intr in intrinsics {
-        generate_intr(intr).wrap_err_with(|| format!("generating `{}`", intr.name))?;
+        let item = generate_intr(intr).wrap_err_with(|| format!("generating `{}`", intr.name))?;
+        trait_def.items.push(item);
     }
 
-    println!("}}");
+    let soft_arch =
+        generate_soft_arch_module(intrinsics).wrap_err("generating soft_arch module")?;
 
-    println!();
-    generate_soft_arch_module(intrinsics).wrap_err("generating soft_arch module")?;
+    let test = generate_test_module(intrinsics).wrap_err("generating test module")?;
 
-    generate_test_module(intrinsics).wrap_err("generating test module")?;
+    let mut file: syn::File = syn::parse_quote! {};
+    file.items = vec![
+        blanket.into(),
+        trait_def.into(),
+        soft_arch.into(),
+        test.into(),
+    ];
 
-    Ok(())
+    Ok(file)
 }
 
-fn generate_soft_arch_module(intrinsics: &[Intrinsic]) -> Result<()> {
-    println!("pub mod soft_arch {{");
-    println!("    pub use super::super::soft_arch_types::*;");
-    println!("    use super::Intrinsics;");
+fn generate_soft_arch_module(intrinsics: &[Intrinsic]) -> Result<syn::ItemMod> {
+    let mut module: syn::ItemMod = syn::parse_quote! {
+        pub mod soft_arch {
+            pub use super::super::soft_arch_types::*;
+            use super::Intrinsics;
+        }
+    };
 
     for intr in intrinsics {
-        generate_intr_soft_arch_wrap(intr)
-            .wrap_err_with(|| format!("generating soft_arch `{}`", intr.name))?;
+        let item = generate_intr_soft_arch_wrap(intr)
+            .wrap_err_with(|| format!("generating `{}`", intr.name))?;
+        module.content.as_mut().unwrap().1.push(item.into());
     }
 
-    println!("}}");
-    Ok(())
+    Ok(module)
 }
 
-fn generate_test_module(intrinsics: &[Intrinsic]) -> Result<()> {
-    println!("#[cfg(all(test, target_arch = \"x86_64\"))]");
-    println!("pub mod tests {{");
-    println!("    use super::super::compare_test_helper::hard_soft_same_128;");
+fn generate_test_module(intrinsics: &[Intrinsic]) -> Result<syn::ItemMod> {
+    let mut module: syn::ItemMod = syn::parse_quote! {
+        #[cfg(all(test, target_arch = "x86_64"))]
+        pub mod tests {
+            use super::super::compare_test_helper::hard_soft_same_128;
+        }
+    };
+
     let rng = &mut SmallRng::seed_from_u64(44);
-
     for intr in intrinsics {
-        generate_intr_test(intr, rng)
+        let item = generate_intr_test(intr, rng)
             .wrap_err_with(|| format!("generating soft_arch `{}`", intr.name))?;
+
+        module.content.as_mut().unwrap().1.push(item.into());
     }
 
-    println!("}}");
-    Ok(())
+    Ok(module)
 }
 
-fn generate_intr(intr: &Intrinsic) -> Result<(), eyre::Error> {
+fn generate_intr(intr: &Intrinsic) -> Result<syn::TraitItem, eyre::Error> {
     eprintln!("generating {}...", intr.name);
-    let signature = signature(intr)?;
-    println!("    {signature} {{");
+
     let body = generate_body(intr).wrap_err("generating body")?;
-    println!("{}", indent(&body, 8));
-    println!("    }}");
-    Ok(())
+
+    signature(intr, body)
 }
 
-fn generate_intr_soft_arch_wrap(intr: &Intrinsic) -> Result<(), eyre::Error> {
+fn generate_intr_soft_arch_wrap(intr: &Intrinsic) -> Result<syn::ItemFn, eyre::Error> {
     eprintln!("generating soft_arch wrapper {}...", intr.name);
-    let signature = signature_soft_arch(intr)?;
-    println!("    {signature} {{");
+
     let body = generate_body_soft_arch(intr).wrap_err("generating body")?;
-    println!("{}", indent(&body, 8));
-    println!("    }}");
-    Ok(())
+
+    signature_soft_arch(intr, body)
 }
 
-fn generate_intr_test(intr: &Intrinsic, rng: &mut SmallRng) -> Result<(), eyre::Error> {
+fn generate_intr_test(intr: &Intrinsic, rng: &mut SmallRng) -> Result<syn::ItemFn, eyre::Error> {
     eprintln!("generating test {}...", intr.name);
-    println!("    #[test]");
-    let name = &intr.name;
-    println!("    fn {name}() {{");
-    // TODO: non-128
-    println!("        hard_soft_same_128! {{");
+
+    let name = ident(&intr.name);
     let body = generate_body_test(intr, rng).wrap_err("generating body")?;
-    println!("{}", indent(&body, 12));
-    println!("        }}");
-    println!("    }}");
-    Ok(())
-}
 
-fn generate_body_soft_arch(intr: &Intrinsic) -> Result<String> {
-    let mut rust_stmts = Vec::<String>::new();
-
-    rust_stmts.push("let mut output = unsafe { std::mem::zeroed() };".into());
-
-    let name = &intr.name;
-    let args = intr
-        .parameter
-        .iter()
-        .map(|param| param.varname.as_deref().ok_or_eyre("parameter has no name"))
-        .collect::<Result<Vec<_>>>()?
-        .join(", ");
-    rust_stmts.push(format!(
-        "super::super::ValueCore.{name}(&mut output, {args});"
-    ));
-
-    rust_stmts.push("output".into());
-
-    Ok(rust_stmts.join("\n"))
-}
-
-fn generate_body_test(intr: &Intrinsic, rng: &mut SmallRng) -> Result<String> {
-    let mut rust_stmts = Vec::<String>::new();
-
-    let args = intr
-        .parameter
-        .iter()
-        .map(|param| -> Result<&str> {
-            let name = param.varname.as_deref().unwrap();
-            let ty = map_type_to_rust(param.r#type.as_deref().unwrap());
-
-            rust_stmts.push(format!("let {name} = {};", random_value(ty, rng)?));
-            Ok(name)
-        })
-        .collect::<Result<Vec<_>>>()
-        .wrap_err("preparing arguments")?
-        .join(", ");
-
-    let name = &intr.name;
-    rust_stmts.push(format!("{name}({args})"));
-
-    Ok(rust_stmts.join("\n"))
-}
-
-fn random_value(ty: &str, rng: &mut SmallRng) -> Result<String> {
-    Ok(match ty {
-        "i16" => rng.gen::<i16>().to_string(),
-        "__m128i" => format!(
-            "_mm_setr_epi16({}, {}, {}, {}, {}, {}, {}, {})",
-            rng.gen::<i16>().to_string(),
-            rng.gen::<i16>().to_string(),
-            rng.gen::<i16>().to_string(),
-            rng.gen::<i16>().to_string(),
-            rng.gen::<i16>().to_string(),
-            rng.gen::<i16>().to_string(),
-            rng.gen::<i16>().to_string(),
-            rng.gen::<i16>().to_string(),
-        ),
-        _ => bail!("unknown type: {ty}"),
+    Ok(syn::parse_quote! {
+        #[test]
+        fn #name() {
+            hard_soft_same_128! {
+                #body
+            }
+        }
     })
 }
 
-fn indent(input: &str, indent: usize) -> String {
-    let replace = format!("\n{}", " ".repeat(indent));
-    let mut s = " ".repeat(indent);
-    s.push_str(&input.trim_end().replace("\n", &replace));
-    s
+fn generate_body_soft_arch(intr: &Intrinsic) -> Result<syn::Block> {
+    let mut rust_stmts = Vec::<syn::Stmt>::new();
+
+    rust_stmts.push(syn::parse_quote! { let mut output = unsafe { std::mem::zeroed() }; });
+
+    let name = ident(&intr.name);
+
+    let args = intr.parameter.iter().map(|param| -> syn::Expr {
+        let name = ident_opt_s(&param.varname).unwrap();
+        syn::parse_quote! { #name }
+    });
+
+    rust_stmts.push(syn::parse_quote! {
+        super::super::ValueCore.#name(&mut output, #(#args),*);
+    });
+
+    rust_stmts.push(syn::Stmt::Expr(syn::parse_quote! { output }, None));
+
+    Ok(syn::parse_quote! {
+        { #(#rust_stmts)* }
+    })
+}
+
+fn generate_body_test(intr: &Intrinsic, rng: &mut SmallRng) -> Result<syn::Block> {
+    let mut rust_stmts = Vec::<syn::Stmt>::new();
+
+    let args = intr
+        .parameter
+        .iter()
+        .map(|param| -> Result<syn::Expr> {
+            let name = ident_opt_s(&param.varname).unwrap();
+            let ty = map_type_to_rust(param.r#type.as_deref().unwrap());
+
+            let random = random_value(ty, rng)?;
+            rust_stmts.push(syn::parse_quote! { let #name = #random; });
+            Ok(syn::parse_quote! { #name })
+        })
+        .collect::<Result<Vec<syn::Expr>>>()
+        .wrap_err("preparing arguments")?;
+
+    let name = ident(&intr.name);
+    rust_stmts.push(syn::Stmt::Expr(
+        syn::parse_quote!(#name( #(#args),* )),
+        None,
+    ));
+
+    Ok(syn::parse_quote! {
+        { #(#rust_stmts)* }
+    })
+}
+
+fn random_value(ty: &str, rng: &mut SmallRng) -> Result<syn::Expr> {
+    let quotei16 = |n| {
+        syn::parse_quote! { #n }
+    };
+    Ok(match ty {
+        "i16" => quotei16(rng.gen::<i16>()),
+        "__m128i" => {
+            let args = [
+                quotei16(rng.gen::<i16>()),
+                quotei16(rng.gen::<i16>()),
+                quotei16(rng.gen::<i16>()),
+                quotei16(rng.gen::<i16>()),
+                quotei16(rng.gen::<i16>()),
+                quotei16(rng.gen::<i16>()),
+                quotei16(rng.gen::<i16>()),
+                quotei16(rng.gen::<i16>()),
+            ];
+
+            syn::parse_quote! {
+                _mm_setr_epi16(#(#args),*)
+            }
+        }
+        _ => bail!("unknown type: {ty}"),
+    })
 }
 
 struct VariableType {
@@ -192,9 +217,9 @@ impl VariableType {
     }
 }
 
-fn generate_body(instr: &Intrinsic) -> Result<String> {
+fn generate_body(instr: &Intrinsic) -> Result<syn::Block> {
     let opstmts = parse_op(instr)?;
-    let mut rust_stmts = Vec::<String>::new();
+    let mut rust_stmts = Vec::<syn::Stmt>::new();
 
     let type_of_ident = |ident: &str| -> Result<VariableType> {
         for param in &instr.parameter {
@@ -222,7 +247,7 @@ fn generate_body(instr: &Intrinsic) -> Result<String> {
                 let Expr::Index { lhs, idx } = lhs else {
                     bail!("lhs of assign must be indexing");
                 };
-                let Expr::Ident(ident) = *lhs else {
+                let Expr::Ident(identifier) = *lhs else {
                     bail!("lhs of indexing must be identifier");
                 };
                 let Expr::Range { left, right } = *idx else {
@@ -243,7 +268,7 @@ fn generate_body(instr: &Intrinsic) -> Result<String> {
                     bail!("indexing size must be power of two");
                 }
 
-                let ty = type_of_ident(&ident)?;
+                let ty = type_of_ident(&identifier)?;
                 if size != ty.elem_width {
                     bail!(
                         "unsupported not-direct element indexing, size={size}, element size={}",
@@ -254,37 +279,48 @@ fn generate_body(instr: &Intrinsic) -> Result<String> {
                 let raw = &ty.raw_type;
                 let rust_type = ty.rust_type();
                 let lane_idx = low / ty.elem_width;
-                rust_stmts.push(format!(
-                    "self.set_lane_{raw}_{rust_type}({ident}, {lane_idx}, {expr});"
-                ));
+
+                let method = ident(&format!("set_lane_{raw}_{rust_type}"));
+                let identifier = ident(&identifier);
+                rust_stmts.push(syn::parse_quote! {
+                    self.#method(#identifier, #lane_idx, #expr);
+                });
             }
             _ => todo!(),
         }
     }
-    Ok(rust_stmts.join("\n"))
+    Ok(syn::parse_quote! {
+        { #(#rust_stmts)* }
+    })
 }
 
 fn generate_expr_tmp(
-    rust_stmts: &mut Vec<String>,
+    rust_stmts: &mut Vec<syn::Stmt>,
     expr: Expr,
     type_of_ident: &impl Fn(&str) -> Result<VariableType>,
-) -> Result<String> {
-    let result = match expr {
-        Expr::Int(int) => int.to_string(),
-        Expr::Ident(ident) => {
-            let ty = type_of_ident(&ident)?;
+) -> Result<syn::Expr> {
+    let tmp = |rust_stmts: &mut Vec<syn::Stmt>, inner: syn::Expr| {
+        let stmt = syn::parse_quote! { let __tmp = #inner; };
+        rust_stmts.push(stmt);
+        syn::parse_quote! { __tmp }
+    };
+
+    let result: syn::Expr = match expr {
+        Expr::Int(int) => syn::parse_quote! { #int },
+        Expr::Ident(identifier) => {
+            let ty = type_of_ident(&identifier)?;
+            let identifier = ident(&identifier);
             if ty.is_signed != ty.rawtype_signed {
                 let from = &ty.raw_type;
                 let to = ty.rust_type();
-                let stmt = format!("let __tmp = self.cast_sign_{from}_{to}({ident});");
-                rust_stmts.push(stmt);
-                "__tmp".into()
+                let method = ident(&format!("cast_sign_{from}_{to}"));
+                tmp(rust_stmts, syn::parse_quote! { self.#method(#identifier) })
             } else {
-                ident
+                syn::parse_quote! { #identifier }
             }
         }
         Expr::Index { lhs, idx } => {
-            let Expr::Ident(ident) = *lhs else {
+            let Expr::Ident(identifier) = *lhs else {
                 bail!("lhs of indexing must be identifier");
             };
             let Expr::Range { left, right } = *idx else {
@@ -304,7 +340,7 @@ fn generate_expr_tmp(
                 bail!("indexing size must be power of two");
             }
 
-            let ty = type_of_ident(&ident)?;
+            let ty = type_of_ident(&identifier)?;
             if size != ty.elem_width {
                 bail!(
                     "unsupported not-direct element indexing, size={size}, element size={}",
@@ -314,21 +350,27 @@ fn generate_expr_tmp(
             let raw = &ty.raw_type;
             let rust_type = ty.rust_type();
             let lane_idx = low / ty.elem_width;
-            let stmt = format!("let __tmp = self.get_lane_{raw}_{rust_type}({ident}, {lane_idx});");
-            rust_stmts.push(stmt);
-            "__tmp".into()
+
+            let identifier = ident(&identifier);
+            let method = ident(&format!("get_lane_{raw}_{rust_type}"));
+
+            tmp(
+                rust_stmts,
+                syn::parse_quote! { self.#method(#identifier, #lane_idx) },
+            )
         }
         Expr::Range { .. } => todo!(),
         Expr::Call { function, args } => {
-            let function = heck::AsSnekCase(function);
+            let function = ident(&heck::ToSnekCase::to_snek_case(function.as_str()));
             let args = args
                 .into_iter()
                 .map(|arg| generate_expr_tmp(rust_stmts, arg, type_of_ident))
-                .collect::<Result<Vec<_>>>()?
-                .join(", ");
-            let stmt = format!("let __tmp = self.{function}({args});");
-            rust_stmts.push(stmt);
-            "__tmp".into()
+                .collect::<Result<Vec<syn::Expr>>>()?;
+
+            tmp(
+                rust_stmts,
+                syn::parse_quote! { self.#function( #(#args),* ) },
+            )
         }
         Expr::BinaryOp { .. } => todo!(),
     };
@@ -343,49 +385,48 @@ fn parse_op(intr: &Intrinsic) -> Result<Vec<Stmt>> {
     Ok(stmts)
 }
 
-fn signature(intr: &Intrinsic) -> Result<String> {
-    let name = &intr.name;
-
-    let args = intr
-        .parameter
-        .iter()
-        .map(|param| {
-            format!(
-                "{}: Self::{}",
-                param.varname.as_ref().unwrap(),
-                map_type_to_rust(param.r#type.as_ref().unwrap())
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let ret_name = intr.ret.varname.as_ref().unwrap();
-    let ret_ty = map_type_to_rust(intr.ret.r#type.as_ref().unwrap());
-
-    Ok(format!(
-        "fn {name}(&mut self, {ret_name}: &mut Self::{ret_ty}, {args})"
-    ))
+fn ident(s: &str) -> syn::Ident {
+    syn::Ident::new(s, proc_macro2::Span::call_site())
+}
+fn ident_opt_s(s: &Option<String>) -> Result<syn::Ident> {
+    let s = s.as_deref().ok_or_eyre("missing")?;
+    Ok(ident(s))
 }
 
-fn signature_soft_arch(intr: &Intrinsic) -> Result<String> {
-    let name = &intr.name;
+fn signature(intr: &Intrinsic, body: syn::Block) -> Result<syn::TraitItem> {
+    let name = ident(&intr.name);
 
-    let args = intr
-        .parameter
-        .iter()
-        .map(|param| {
-            format!(
-                "{}: {}",
-                param.varname.as_ref().unwrap(),
-                map_type_to_rust(param.r#type.as_ref().unwrap())
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
+    let ret_name = ident_opt_s(&intr.ret.varname)?;
+    let ret_ty = ident(map_type_to_rust(intr.ret.r#type.as_ref().unwrap()));
 
-    let ret_ty = map_type_to_rust(intr.ret.r#type.as_ref().unwrap());
+    let args = [
+        syn::parse_quote! {  &mut self  },
+        syn::parse_quote! { #ret_name: &mut Self::#ret_ty },
+    ]
+    .into_iter()
+    .chain(intr.parameter.iter().map(|param| -> syn::FnArg {
+        let varname = ident_opt_s(&param.varname).unwrap();
+        let ty = ident(map_type_to_rust(param.r#type.as_ref().unwrap()));
 
-    Ok(format!("pub fn {name}({args}) -> {ret_ty}"))
+        syn::parse_quote! { #varname: Self::#ty }
+    }));
+
+    Ok(syn::parse_quote! { fn #name(#(#args),*) #body })
+}
+
+fn signature_soft_arch(intr: &Intrinsic, body: syn::Block) -> Result<syn::ItemFn> {
+    let name = ident(&intr.name);
+
+    let args = intr.parameter.iter().map(|param| -> syn::FnArg {
+        let varname = ident_opt_s(&param.varname).unwrap();
+        let ty = ident(map_type_to_rust(param.r#type.as_ref().unwrap()));
+
+        syn::parse_quote! { #varname: #ty }
+    });
+
+    let ret_ty = ident(map_type_to_rust(intr.ret.r#type.as_ref().unwrap()));
+
+    Ok(syn::parse_quote! { pub fn #name( #(#args),* ) -> #ret_ty #body })
 }
 
 fn map_type_to_rust(ty: &str) -> &str {
