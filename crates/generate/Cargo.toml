@@ -9,4 +9,5 @@ edition = "2021"
 eyre = "0.6.11"
 heck = "0.4.1"
 logos = "0.13.0"
+rand = { version = "0.8.5", features = ["small_rng"] }
 strong-xml = "0.6.3"

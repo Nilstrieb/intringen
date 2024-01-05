@@ -1,7 +1,8 @@
-use eyre::{bail, ContextCompat, OptionExt, Result};
+use eyre::{bail, OptionExt, Result};
 use logos::Logos;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum Stmt {
     FnDef,
     Assign {
@@ -16,6 +17,7 @@ pub(crate) enum Stmt {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum Expr {
     Int(u64),
     Ident(String),
@@ -133,7 +135,7 @@ fn parse_expr_call(parser: &mut Parser) -> Result<Expr> {
     loop {
         if parser.eat(Token::ParenOpen) {
             let arg = parse_expr(parser)?;
-            parser.expect(Token::ParenClose);
+            parser.expect(Token::ParenClose)?;
             let Expr::Ident(ident) = lhs else {
                 panic!("lhs of function must be ident");
             };
@@ -145,7 +147,7 @@ fn parse_expr_call(parser: &mut Parser) -> Result<Expr> {
         }
         if parser.eat(Token::BracketOpen) {
             let arg = parse_expr(parser)?;
-            parser.expect(Token::BracketClose);
+            parser.expect(Token::BracketClose)?;
             lhs = Expr::Index {
                 lhs: Box::new(lhs),
                 idx: Box::new(arg),

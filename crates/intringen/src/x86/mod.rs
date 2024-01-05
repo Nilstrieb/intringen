@@ -26,6 +26,7 @@ pub trait Core {
     fn set_lane___m128i_i8(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::i8);
     fn set_lane___m128i_u16(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::u16);
 
+    fn saturate8(&mut self, elem: Self::i16) -> Self::i8;
     fn saturate_u8(&mut self, elem: Self::i16) -> Self::u8;
 }
 
@@ -77,6 +78,11 @@ impl Core for ValueCore {
         place[(idx * 2 + 1) as usize] = second;
     }
 
+    fn saturate8(&mut self, elem: Self::i16) -> Self::i8 {
+        let clamp = elem.clamp(i8::MIN as i16, i8::MAX as i16);
+        clamp as i8
+    }
+
     fn saturate_u8(&mut self, elem: Self::i16) -> Self::u8 {
         let clamp = elem.clamp(0, u8::MAX as i16);
         clamp as u8
@@ -87,5 +93,22 @@ mod soft_arch_types {
     pub type __m128i = [u8; 16];
 }
 
-#[cfg(test)]
-mod tests;
+#[cfg(all(test, target_arch = "x86_64"))]
+mod compare_test_helper {
+    macro_rules! hard_soft_same_128 {
+        ($($stmt:tt)*) => {
+            let soft = {
+                use crate::x86::soft_arch::*;
+                $($stmt)*
+            };
+            let hard = unsafe {
+                std::mem::transmute::<_, [u8; 16]>({
+                    use core::arch::x86_64::*;
+                    $($stmt)*
+                })
+            };
+            assert_eq!(soft, hard);
+        };
+    }
+    pub(super) use hard_soft_same_128;
+}

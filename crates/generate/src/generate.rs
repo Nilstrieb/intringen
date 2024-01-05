@@ -3,6 +3,7 @@ use crate::{
     Intrinsic,
 };
 use eyre::{bail, Context, OptionExt, Result};
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 
 pub fn generate(intrinsics: &[Intrinsic]) -> Result<()> {
     println!("impl<C: super::Core> Intrinsics for C {{}}");
@@ -14,7 +15,9 @@ pub fn generate(intrinsics: &[Intrinsic]) -> Result<()> {
     println!("}}");
 
     println!();
-    generate_soft_arch_module(intrinsics).context("generating soft_arch module")?;
+    generate_soft_arch_module(intrinsics).wrap_err("generating soft_arch module")?;
+
+    generate_test_module(intrinsics).wrap_err("generating test module")?;
 
     Ok(())
 }
@@ -26,6 +29,21 @@ fn generate_soft_arch_module(intrinsics: &[Intrinsic]) -> Result<()> {
 
     for intr in intrinsics {
         generate_intr_soft_arch_wrap(intr)
+            .wrap_err_with(|| format!("generating soft_arch `{}`", intr.name))?;
+    }
+
+    println!("}}");
+    Ok(())
+}
+
+fn generate_test_module(intrinsics: &[Intrinsic]) -> Result<()> {
+    println!("#[cfg(all(test, target_arch = \"x86_64\"))]");
+    println!("pub mod tests {{");
+    println!("    use super::super::compare_test_helper::hard_soft_same_128;");
+    let rng = &mut SmallRng::seed_from_u64(44);
+
+    for intr in intrinsics {
+        generate_intr_test(intr, rng)
             .wrap_err_with(|| format!("generating soft_arch `{}`", intr.name))?;
     }
 
@@ -53,6 +71,20 @@ fn generate_intr_soft_arch_wrap(intr: &Intrinsic) -> Result<(), eyre::Error> {
     Ok(())
 }
 
+fn generate_intr_test(intr: &Intrinsic, rng: &mut SmallRng) -> Result<(), eyre::Error> {
+    eprintln!("generating test {}...", intr.name);
+    println!("    #[test]");
+    let name = &intr.name;
+    println!("    fn {name}() {{");
+    // TODO: non-128
+    println!("        hard_soft_same_128! {{");
+    let body = generate_body_test(intr, rng).wrap_err("generating body")?;
+    println!("{}", indent(&body, 12));
+    println!("        }}");
+    println!("    }}");
+    Ok(())
+}
+
 fn generate_body_soft_arch(intr: &Intrinsic) -> Result<String> {
     let mut rust_stmts = Vec::<String>::new();
 
@@ -72,6 +104,47 @@ fn generate_body_soft_arch(intr: &Intrinsic) -> Result<String> {
     rust_stmts.push("output".into());
 
     Ok(rust_stmts.join("\n"))
+}
+
+fn generate_body_test(intr: &Intrinsic, rng: &mut SmallRng) -> Result<String> {
+    let mut rust_stmts = Vec::<String>::new();
+
+    let args = intr
+        .parameter
+        .iter()
+        .map(|param| -> Result<&str> {
+            let name = param.varname.as_deref().unwrap();
+            let ty = map_type_to_rust(param.r#type.as_deref().unwrap());
+
+            rust_stmts.push(format!("let {name} = {};", random_value(ty, rng)?));
+            Ok(name)
+        })
+        .collect::<Result<Vec<_>>>()
+        .wrap_err("preparing arguments")?
+        .join(", ");
+
+    let name = &intr.name;
+    rust_stmts.push(format!("{name}({args})"));
+
+    Ok(rust_stmts.join("\n"))
+}
+
+fn random_value(ty: &str, rng: &mut SmallRng) -> Result<String> {
+    Ok(match ty {
+        "i16" => rng.gen::<i16>().to_string(),
+        "__m128i" => format!(
+            "_mm_setr_epi16({}, {}, {}, {}, {}, {}, {}, {})",
+            rng.gen::<i16>().to_string(),
+            rng.gen::<i16>().to_string(),
+            rng.gen::<i16>().to_string(),
+            rng.gen::<i16>().to_string(),
+            rng.gen::<i16>().to_string(),
+            rng.gen::<i16>().to_string(),
+            rng.gen::<i16>().to_string(),
+            rng.gen::<i16>().to_string(),
+        ),
+        _ => bail!("unknown type: {ty}"),
+    })
 }
 
 fn indent(input: &str, indent: usize) -> String {
@@ -98,6 +171,7 @@ impl VariableType {
             _ => bail!("unknown type: {ty}"),
         };
         let (is_signed, elem_width) = match etype {
+            "SI8" => (true, 8),
             "SI16" => (true, 16),
             "UI8" => (false, 8),
             "UI16" => (false, 16),
