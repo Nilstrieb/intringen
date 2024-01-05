@@ -17,17 +17,28 @@ pub trait Core {
 
     type __m128i: Copy;
 
+    fn cast_sign_i8_u8(&mut self, value: Self::i8) -> Self::u8;
     fn cast_sign_i16_u16(&mut self, value: Self::i16) -> Self::u16;
+    fn cast_sign_i32_u32(&mut self, value: Self::i32) -> Self::u32;
+    fn cast_sign_i64_u64(&mut self, value: Self::i64) -> Self::u64;
 
+    fn get_lane___m128i_u8(&mut self, value: Self::__m128i, idx: u64) -> Self::u8;
+    fn get_lane___m128i_i8(&mut self, value: Self::__m128i, idx: u64) -> Self::i8;
     fn get_lane___m128i_u16(&mut self, value: Self::__m128i, idx: u64) -> Self::u16;
     fn get_lane___m128i_i16(&mut self, value: Self::__m128i, idx: u64) -> Self::i16;
     fn get_lane___m128i_u32(&mut self, value: Self::__m128i, idx: u64) -> Self::u32;
     fn get_lane___m128i_i32(&mut self, value: Self::__m128i, idx: u64) -> Self::i32;
+    fn get_lane___m128i_u64(&mut self, value: Self::__m128i, idx: u64) -> Self::u64;
+    fn get_lane___m128i_i64(&mut self, value: Self::__m128i, idx: u64) -> Self::i64;
 
     fn set_lane___m128i_u8(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::u8);
     fn set_lane___m128i_i8(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::i8);
     fn set_lane___m128i_u16(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::u16);
     fn set_lane___m128i_i16(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::i16);
+    fn set_lane___m128i_u32(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::u32);
+    fn set_lane___m128i_i32(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::i32);
+    fn set_lane___m128i_u64(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::u64);
+    fn set_lane___m128i_i64(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::i64);
 
     fn saturate8(&mut self, elem: Self::i16) -> Self::i8;
     fn saturate_u8(&mut self, elem: Self::i16) -> Self::u8;
@@ -50,15 +61,42 @@ impl Core for ValueCore {
 
     type __m128i = [u8; 16];
 
+    ////// CAST
+
+    fn cast_sign_i8_u8(&mut self, value: Self::i8) -> Self::u8 {
+        value as _
+    }
+
     fn cast_sign_i16_u16(&mut self, value: Self::i16) -> Self::u16 {
         value as _
     }
 
-    fn get_lane___m128i_u16(&mut self, value: Self::__m128i, idx: u64) -> Self::u16 {
-        let first = value[(idx * 2 + 1) as usize];
-        let second = value[(idx * 2) as usize];
+    fn cast_sign_i32_u32(&mut self, value: Self::i32) -> Self::u32 {
+        value as _
+    }
 
-        ((first as u16) << 8) | (second as u16)
+    fn cast_sign_i64_u64(&mut self, value: Self::i64) -> Self::u64 {
+        value as _
+    }
+
+    ////// GET LANE
+
+    fn get_lane___m128i_u8(&mut self, value: Self::__m128i, idx: u64) -> Self::u8 {
+        value[idx as usize]
+    }
+
+    fn get_lane___m128i_i8(&mut self, value: Self::__m128i, idx: u64) -> Self::i8 {
+        self.get_lane___m128i_u8(value, idx) as i8
+    }
+
+    fn get_lane___m128i_u16(&mut self, value: Self::__m128i, idx: u64) -> Self::u16 {
+        let mut acc = 0;
+        for i in 0..2 {
+            let v = value[(idx * 2 + i) as usize];
+            acc |= (v as u16) << (8 * i);
+        }
+
+        acc
     }
 
     fn get_lane___m128i_i16(&mut self, value: Self::__m128i, idx: u64) -> Self::i16 {
@@ -66,17 +104,34 @@ impl Core for ValueCore {
     }
 
     fn get_lane___m128i_u32(&mut self, value: Self::__m128i, idx: u64) -> Self::u32 {
-        let first = value[(idx * 4 + 3) as usize];
-        let second = value[(idx * 4 + 2) as usize];
-        let third = value[(idx * 4 + 1) as usize];
-        let fourth = value[(idx * 4) as usize];
+        let mut acc = 0;
+        for i in 0..4 {
+            let v = value[(idx * 4 + i) as usize];
+            acc |= (v as u32) << (8 * i);
+        }
 
-        ((first as u32) << 24) | ((second as u32) << 16) | ((third as u32) << 8) | (fourth as u32)
+        acc
     }
 
     fn get_lane___m128i_i32(&mut self, value: Self::__m128i, idx: u64) -> Self::i32 {
         self.get_lane___m128i_u32(value, idx) as i32
     }
+
+    fn get_lane___m128i_u64(&mut self, value: Self::__m128i, idx: u64) -> Self::u64 {
+        let mut acc = 0;
+        for i in 0..8 {
+            let v = value[(idx * 8 + i) as usize];
+            acc |= (v as u64) << (8 * i);
+        }
+
+        acc
+    }
+
+    fn get_lane___m128i_i64(&mut self, value: Self::__m128i, idx: u64) -> Self::i64 {
+        self.get_lane___m128i_u64(value, idx) as i64
+    }
+
+    ////// SET LANE
 
     fn set_lane___m128i_u8(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::u8) {
         place[idx as usize] = value;
@@ -87,15 +142,39 @@ impl Core for ValueCore {
     }
 
     fn set_lane___m128i_u16(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::u16) {
-        let first = (value & 0xFF) as u8;
-        let second = (value >> 8) as u8;
-        place[(idx * 2) as usize] = first;
-        place[(idx * 2 + 1) as usize] = second;
+        for i in 0..2 {
+            let value = ((value >> 8 * i) & 0xFF) as u8;
+            place[(idx * 2 + i) as usize] = value;
+        }
     }
 
     fn set_lane___m128i_i16(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::i16) {
         self.set_lane___m128i_u16(place, idx, value as u16);
     }
+
+    fn set_lane___m128i_u32(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::u32) {
+        for i in 0..4 {
+            let value = ((value >> 8 * i) & 0xFF) as u8;
+            place[(idx * 4 + i) as usize] = value;
+        }
+    }
+
+    fn set_lane___m128i_i32(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::i32) {
+        self.set_lane___m128i_u32(place, idx, value as u32);
+    }
+
+    fn set_lane___m128i_u64(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::u64) {
+        for i in 0..8 {
+            let value = ((value >> 8 * i) & 0xFF) as u8;
+            place[(idx * 8 + i) as usize] = value;
+        }
+    }
+
+    fn set_lane___m128i_i64(&mut self, place: &mut Self::__m128i, idx: u64, value: Self::i64) {
+        self.set_lane___m128i_u32(place, idx, value as u32);
+    }
+
+    ////// HELPERS
 
     fn saturate8(&mut self, elem: Self::i16) -> Self::i8 {
         let clamp = elem.clamp(i8::MIN as i16, i8::MAX as i16);

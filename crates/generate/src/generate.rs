@@ -154,21 +154,24 @@ fn generate_body_test(intr: &Intrinsic, rng: &mut SmallRng) -> Result<syn::Block
 }
 
 fn random_value(ty: &str, rng: &mut SmallRng) -> Result<syn::Expr> {
-    let quotei16 = |n| {
+    fn quote(n: impl quote::ToTokens) -> syn::Expr {
         syn::parse_quote! { #n }
-    };
+    }
     Ok(match ty {
-        "i16" => quotei16(rng.gen::<i16>()),
+        "i8" => quote(rng.gen::<i8>()),
+        "i16" => quote(rng.gen::<i16>()),
+        "i32" => quote(rng.gen::<i32>()),
+        "i64" => quote(rng.gen::<i64>()),
         "__m128i" => {
             let args = [
-                quotei16(rng.gen::<i16>()),
-                quotei16(rng.gen::<i16>()),
-                quotei16(rng.gen::<i16>()),
-                quotei16(rng.gen::<i16>()),
-                quotei16(rng.gen::<i16>()),
-                quotei16(rng.gen::<i16>()),
-                quotei16(rng.gen::<i16>()),
-                quotei16(rng.gen::<i16>()),
+                quote(rng.gen::<i16>()),
+                quote(rng.gen::<i16>()),
+                quote(rng.gen::<i16>()),
+                quote(rng.gen::<i16>()),
+                quote(rng.gen::<i16>()),
+                quote(rng.gen::<i16>()),
+                quote(rng.gen::<i16>()),
+                quote(rng.gen::<i16>()),
             ];
 
             syn::parse_quote! {
@@ -192,7 +195,10 @@ impl VariableType {
     fn of(etype: &str, ty: &str) -> Result<Self> {
         let (rawtype_signed, full_width) = match map_type_to_rust(ty) {
             "__m128i" => (false, 128),
+            "i8" => (true, 8),
             "i16" => (true, 16),
+            "i32" => (true, 32),
+            "i64" => (true, 64),
             _ => bail!("unknown type: {ty}"),
         };
         let (is_signed, elem_width) = match etype {
@@ -201,6 +207,8 @@ impl VariableType {
             "SI32" => (true, 32),
             "UI8" => (false, 8),
             "UI16" => (false, 16),
+            "UI32" => (false, 32),
+            "UI64" => (false, 64),
             _ => bail!("unknown element type: {etype}"),
         };
         Ok(Self {
@@ -432,7 +440,11 @@ fn signature_soft_arch(intr: &Intrinsic, body: syn::Block) -> Result<syn::ItemFn
 
 fn map_type_to_rust(ty: &str) -> &str {
     match ty {
+        "__m128i" => ty,
+        "char" => "i8",
         "short" => "i16",
-        ty => ty,
+        "int" => "i32",
+        "__int64" => "i64",
+        ty => panic!("unknown type: {ty}"),
     }
 }
