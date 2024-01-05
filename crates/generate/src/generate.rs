@@ -198,6 +198,7 @@ impl VariableType {
         let (is_signed, elem_width) = match etype {
             "SI8" => (true, 8),
             "SI16" => (true, 16),
+            "SI32" => (true, 32),
             "UI8" => (false, 8),
             "UI16" => (false, 16),
             _ => bail!("unknown element type: {etype}"),

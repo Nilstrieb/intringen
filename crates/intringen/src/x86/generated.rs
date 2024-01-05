@@ -84,6 +84,37 @@ pub trait Intrinsics: super::Core {
         let __tmp = self.saturate8(__tmp);
         self.set_lane___m128i_i8(dst, 15u64, __tmp);
     }
+    fn _mm_packs_epi32(
+        &mut self,
+        dst: &mut Self::__m128i,
+        a: Self::__m128i,
+        b: Self::__m128i,
+    ) {
+        let __tmp = self.get_lane___m128i_i32(a, 0u64);
+        let __tmp = self.saturate16(__tmp);
+        self.set_lane___m128i_i16(dst, 0u64, __tmp);
+        let __tmp = self.get_lane___m128i_i32(a, 1u64);
+        let __tmp = self.saturate16(__tmp);
+        self.set_lane___m128i_i16(dst, 1u64, __tmp);
+        let __tmp = self.get_lane___m128i_i32(a, 2u64);
+        let __tmp = self.saturate16(__tmp);
+        self.set_lane___m128i_i16(dst, 2u64, __tmp);
+        let __tmp = self.get_lane___m128i_i32(a, 3u64);
+        let __tmp = self.saturate16(__tmp);
+        self.set_lane___m128i_i16(dst, 3u64, __tmp);
+        let __tmp = self.get_lane___m128i_i32(b, 0u64);
+        let __tmp = self.saturate16(__tmp);
+        self.set_lane___m128i_i16(dst, 4u64, __tmp);
+        let __tmp = self.get_lane___m128i_i32(b, 1u64);
+        let __tmp = self.saturate16(__tmp);
+        self.set_lane___m128i_i16(dst, 5u64, __tmp);
+        let __tmp = self.get_lane___m128i_i32(b, 2u64);
+        let __tmp = self.saturate16(__tmp);
+        self.set_lane___m128i_i16(dst, 6u64, __tmp);
+        let __tmp = self.get_lane___m128i_i32(b, 3u64);
+        let __tmp = self.saturate16(__tmp);
+        self.set_lane___m128i_i16(dst, 7u64, __tmp);
+    }
     fn _mm_packus_epi16(
         &mut self,
         dst: &mut Self::__m128i,
@@ -139,6 +170,37 @@ pub trait Intrinsics: super::Core {
         let __tmp = self.saturate_u8(__tmp);
         self.set_lane___m128i_u8(dst, 15u64, __tmp);
     }
+    fn _mm_packus_epi32(
+        &mut self,
+        dst: &mut Self::__m128i,
+        a: Self::__m128i,
+        b: Self::__m128i,
+    ) {
+        let __tmp = self.get_lane___m128i_i32(a, 0u64);
+        let __tmp = self.saturate_u16(__tmp);
+        self.set_lane___m128i_u16(dst, 0u64, __tmp);
+        let __tmp = self.get_lane___m128i_i32(a, 1u64);
+        let __tmp = self.saturate_u16(__tmp);
+        self.set_lane___m128i_u16(dst, 1u64, __tmp);
+        let __tmp = self.get_lane___m128i_i32(a, 2u64);
+        let __tmp = self.saturate_u16(__tmp);
+        self.set_lane___m128i_u16(dst, 2u64, __tmp);
+        let __tmp = self.get_lane___m128i_i32(a, 3u64);
+        let __tmp = self.saturate_u16(__tmp);
+        self.set_lane___m128i_u16(dst, 3u64, __tmp);
+        let __tmp = self.get_lane___m128i_i32(b, 0u64);
+        let __tmp = self.saturate_u16(__tmp);
+        self.set_lane___m128i_u16(dst, 4u64, __tmp);
+        let __tmp = self.get_lane___m128i_i32(b, 1u64);
+        let __tmp = self.saturate_u16(__tmp);
+        self.set_lane___m128i_u16(dst, 5u64, __tmp);
+        let __tmp = self.get_lane___m128i_i32(b, 2u64);
+        let __tmp = self.saturate_u16(__tmp);
+        self.set_lane___m128i_u16(dst, 6u64, __tmp);
+        let __tmp = self.get_lane___m128i_i32(b, 3u64);
+        let __tmp = self.saturate_u16(__tmp);
+        self.set_lane___m128i_u16(dst, 7u64, __tmp);
+    }
 }
 pub mod soft_arch {
     pub use super::super::soft_arch_types::*;
@@ -163,9 +225,19 @@ pub mod soft_arch {
         super::super::ValueCore._mm_packs_epi16(&mut output, a, b);
         output
     }
+    pub fn _mm_packs_epi32(a: __m128i, b: __m128i) -> __m128i {
+        let mut output = unsafe { std::mem::zeroed() };
+        super::super::ValueCore._mm_packs_epi32(&mut output, a, b);
+        output
+    }
     pub fn _mm_packus_epi16(a: __m128i, b: __m128i) -> __m128i {
         let mut output = unsafe { std::mem::zeroed() };
         super::super::ValueCore._mm_packus_epi16(&mut output, a, b);
+        output
+    }
+    pub fn _mm_packus_epi32(a: __m128i, b: __m128i) -> __m128i {
+        let mut output = unsafe { std::mem::zeroed() };
+        super::super::ValueCore._mm_packus_epi32(&mut output, a, b);
         output
     }
 }
@@ -190,12 +262,30 @@ pub mod tests {
         }
     }
     #[test]
-    fn _mm_packus_epi16() {
+    fn _mm_packs_epi32() {
         hard_soft_same_128! {
             { let a = _mm_setr_epi16(18077i16, 23617i16, - 9205i16, 21233i16, - 4332i16,
             - 31339i16, 23623i16, - 22080i16); let b = _mm_setr_epi16(- 1436i16, -
             30227i16, 8629i16, 10922i16, - 16731i16, - 1013i16, - 14310i16, 2892i16);
+            _mm_packs_epi32(a, b) }
+        }
+    }
+    #[test]
+    fn _mm_packus_epi16() {
+        hard_soft_same_128! {
+            { let a = _mm_setr_epi16(- 28568i16, 12614i16, 20103i16, 32412i16, -
+            28704i16, - 27930i16, 4197i16, 1829i16); let b = _mm_setr_epi16(9149i16,
+            18759i16, 30885i16, - 3879i16, 21600i16, 24454i16, 23524i16, 10765i16);
             _mm_packus_epi16(a, b) }
+        }
+    }
+    #[test]
+    fn _mm_packus_epi32() {
+        hard_soft_same_128! {
+            { let a = _mm_setr_epi16(32539i16, 26890i16, - 3892i16, 4386i16, 18704i16,
+            8253i16, - 29217i16, 32013i16); let b = _mm_setr_epi16(7448i16, 2172i16, -
+            14764i16, - 1068i16, - 25463i16, 21215i16, - 31392i16, - 14015i16);
+            _mm_packus_epi32(a, b) }
         }
     }
 }

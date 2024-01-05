@@ -88,4 +88,10 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-const INTRINSICS_GENERATE: &[&str] = &["_mm_packus_epi16", "_mm_packs_epi16", "_mm_setr_epi16"];
+const INTRINSICS_GENERATE: &[&str] = &[
+    "_mm_packus_epi16",
+    "_mm_packs_epi16",
+    "_mm_packus_epi32",
+    "_mm_packs_epi32",
+    "_mm_setr_epi16",
+];
