@@ -9,6 +9,12 @@ pub(crate) enum Stmt {
         lhs: Expr,
         rhs: Expr,
     },
+    For {
+        counter: String,
+        from: u64,
+        to: u64,
+        body: Vec<Stmt>,
+    },
     If {
         cond: Expr,
         then: Expr,
@@ -41,7 +47,10 @@ pub(crate) enum Expr {
 }
 
 #[derive(Debug)]
-pub(crate) enum BinaryOpKind {}
+pub(crate) enum BinaryOpKind {
+    Add,
+    Mul,
+}
 
 pub(crate) fn parse_operation(op: &str) -> Result<Vec<Stmt>> {
     let tokens = Token::lexer(op.trim())
@@ -95,7 +104,33 @@ fn parse(tokens: Vec<Token>) -> Result<Vec<Stmt>> {
 }
 
 fn parse_stmt(parser: &mut Parser) -> Result<Stmt> {
-    let stmt = match parser.peek() {
+    let stmt = match parser.peek()? {
+        Token::For => {
+            parser.next()?;
+            let Token::Ident(ident) = parser.next()? else {
+                bail!("expected ident after for");
+            };
+            parser.expect(Token::Assign)?;
+            let Token::Integer(from) = parser.next()? else {
+                bail!("expected integer in for");
+            };
+            parser.expect(Token::To)?;
+            let Token::Integer(to) = parser.next()? else {
+                bail!("expected integer after to");
+            };
+            parser.expect(Token::Newline)?;
+            let mut stmts = Vec::new();
+            while !parser.peek().is_ok_and(|t| *t == Token::Endfor) {
+                stmts.push(parse_stmt(parser)?);
+            }
+            parser.expect(Token::Endfor)?;
+            Stmt::For {
+                counter: ident,
+                from,
+                to,
+                body: stmts,
+            }
+        }
         _ => {
             let expr = parse_expr(parser)?;
 
@@ -117,9 +152,9 @@ fn parse_expr(parser: &mut Parser) -> Result<Expr> {
 }
 
 fn parse_expr_range(parser: &mut Parser) -> Result<Expr> {
-    let expr = parse_expr_call(parser)?;
+    let expr = parse_expr_addsub(parser)?;
     if parser.eat(Token::Colon) {
-        let rhs = parse_expr_call(parser)?;
+        let rhs = parse_expr_addsub(parser)?;
         Ok(Expr::Range {
             left: Box::new(expr),
             right: Box::new(rhs),
@@ -127,6 +162,24 @@ fn parse_expr_range(parser: &mut Parser) -> Result<Expr> {
     } else {
         Ok(expr)
     }
+}
+
+fn parse_expr_addsub(parser: &mut Parser) -> Result<Expr> {
+    let lhs = parse_expr_muldiv(parser)?;
+    if parser.eat(Token::Plus) {
+        let rhs = parse_expr_addsub(parser)?;
+        return Ok(Expr::BinaryOp { op: BinaryOpKind::Add, lhs: Box::new(lhs), rhs: Box::new(rhs) });
+    }
+    Ok(lhs)
+}
+
+fn parse_expr_muldiv(parser: &mut Parser) -> Result<Expr> {
+    let lhs = parse_expr_call(parser)?;
+    if parser.eat(Token::Star) {
+        let rhs = parse_expr_muldiv(parser)?;
+        return Ok(Expr::BinaryOp { op: BinaryOpKind::Mul, lhs: Box::new(lhs), rhs: Box::new(rhs) });
+    }
+    Ok(lhs)
 }
 
 fn parse_expr_call(parser: &mut Parser) -> Result<Expr> {
@@ -198,6 +251,12 @@ enum Token {
     Return,
     #[token("OF")]
     Of,
+    #[token("to")]
+    To,
+    #[token("FOR")]
+    For,
+    #[token("ENDFOR")]
+    Endfor,
 
     #[token("\n")]
     Newline,
@@ -208,6 +267,10 @@ enum Token {
     Assign,
     #[token(":")]
     Colon,
+    #[token("*")]
+    Star,
+    #[token("+")]
+    Plus,
 
     #[regex(r"[a-zA-Z_]\w*", |lex| lex.slice().to_owned())]
     Ident(String),

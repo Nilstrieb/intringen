@@ -1,9 +1,10 @@
 use crate::{
-    parse::{Expr, Stmt},
+    parse::{BinaryOpKind, Expr, Stmt},
     Intrinsic,
 };
 use eyre::{bail, Context, OptionExt, Result};
 use rand::{rngs::SmallRng, Rng, SeedableRng};
+use syn::Block;
 
 pub fn generate(intrinsics: &[Intrinsic]) -> Result<syn::File> {
     let blanket: syn::ItemImpl = syn::parse_quote! {
@@ -228,7 +229,6 @@ impl VariableType {
 
 fn generate_body(instr: &Intrinsic) -> Result<syn::Block> {
     let opstmts = parse_op(instr)?;
-    let mut rust_stmts = Vec::<syn::Stmt>::new();
 
     let type_of_ident = |ident: &str| -> Result<VariableType> {
         for param in &instr.parameter {
@@ -250,12 +250,88 @@ fn generate_body(instr: &Intrinsic) -> Result<syn::Block> {
         bail!("variable {ident} not found in pseudocode");
     };
 
+    gen_block(opstmts, &type_of_ident)
+}
+
+fn gen_idx(
+    lhs: Expr,
+    idx: Expr,
+    type_of_ident: &impl Fn(&str) -> Result<VariableType>,
+) -> Result<()> {
+    let Expr::Ident(identifier) = lhs else {
+        bail!("lhs of indexing must be identifier");
+    };
+    let Expr::Range { left, right } = idx else {
+        bail!("idx argument must be range");
+    };
+
+    let ty = type_of_ident(&identifier)?;
+
+    let (lane_idx, size): (syn::Expr, _) = match (*left, *right) {
+        (Expr::Int(high), Expr::Int(low)) => {
+            if high < low {
+                bail!("range must be HIGH:LOW, but was {high}:{low}");
+            }
+            let size = high - low + 1; // (inclusive)
+
+            let lane_idx = low / ty.elem_width;
+
+            (syn::parse_quote! { #lane_idx }, size)
+        }
+        (
+            Expr::BinaryOp {
+                op: BinaryOpKind::Add,
+                lhs,
+                rhs,
+            },
+            Expr::Ident(low),
+        ) => {
+            let Expr::Ident(high_ident) = *rhs else {
+                bail!("rhs of lhs of + indexing must be ident");
+            };
+            let Expr::Int(high_offset) = *lhs else {
+                bail!("lhs of lhs of + indexing must be ident");
+            };
+
+            if high_ident != low {
+                bail!("{high_ident} != {low}");
+            }
+            let size = high_offset + 1;
+            let identifier = ident(&low);
+            (syn::parse_quote! { ( #identifier / #size ) }, size)
+        }
+        _ => bail!("unknown range indexing arguments"),
+    };
+
+    if !size.is_power_of_two() {
+        bail!("indexing size must be power of two");
+    }
+    if size != ty.elem_width {
+        bail!(
+            "unsupported not-direct element indexing, size={size}, element size={}",
+            ty.elem_width
+        );
+    }
+    let raw = &ty.raw_type;
+    let rust_type = ty.rust_type();
+
+    let identifier = ident(&identifier);
+    let method = ident(&format!("get_lane_{raw}_{rust_type}"));
+    Ok(())
+}
+
+fn gen_block(
+    opstmts: Vec<Stmt>,
+    type_of_ident: &impl Fn(&str) -> Result<VariableType>,
+) -> Result<Block> {
+    let mut rust_stmts = Vec::<syn::Stmt>::new();
+
     for stmt in opstmts {
         match stmt {
-            Stmt::Assign { lhs, rhs } => {
-                let Expr::Index { lhs, idx } = lhs else {
-                    bail!("lhs of assign must be indexing");
-                };
+            Stmt::Assign {
+                lhs: Expr::Index { lhs, idx },
+                rhs,
+            } => {
                 let Expr::Ident(identifier) = *lhs else {
                     bail!("lhs of indexing must be identifier");
                 };
@@ -284,7 +360,7 @@ fn generate_body(instr: &Intrinsic) -> Result<syn::Block> {
                         ty.elem_width
                     );
                 }
-                let expr = generate_expr_tmp(&mut rust_stmts, rhs, &type_of_ident)?;
+                let expr = gen_expr_tmp(&mut rust_stmts, rhs, &type_of_ident)?;
                 let raw = &ty.raw_type;
                 let rust_type = ty.rust_type();
                 let lane_idx = low / ty.elem_width;
@@ -295,6 +371,38 @@ fn generate_body(instr: &Intrinsic) -> Result<syn::Block> {
                     self.#method(#identifier, #lane_idx, #expr);
                 });
             }
+            Stmt::Assign {
+                lhs: Expr::Ident(lhs),
+                rhs,
+            } => {
+                let rhs = gen_expr_tmp(&mut rust_stmts, rhs, type_of_ident)?;
+
+                let exists = type_of_ident(&lhs).is_ok();
+
+                let lhs = ident(&lhs);
+                let stmt = if exists {
+                    syn::parse_quote! { #lhs = #rhs; }
+                } else {
+                    syn::parse_quote! { let #lhs = #rhs; }
+                };
+
+                rust_stmts.push(stmt);
+            }
+            Stmt::For {
+                counter,
+                from,
+                to,
+                body,
+            } => {
+                let counter = ident(&counter);
+                let mut for_: syn::ExprForLoop =
+                    syn::parse_quote! { for #counter in #from..=#to {} };
+
+                let body = gen_block(body, type_of_ident)?;
+                for_.body = body;
+
+                rust_stmts.push(syn::Stmt::Expr(syn::Expr::ForLoop(for_), None));
+            }
             _ => todo!(),
         }
     }
@@ -303,7 +411,7 @@ fn generate_body(instr: &Intrinsic) -> Result<syn::Block> {
     })
 }
 
-fn generate_expr_tmp(
+fn gen_expr_tmp(
     rust_stmts: &mut Vec<syn::Stmt>,
     expr: Expr,
     type_of_ident: &impl Fn(&str) -> Result<VariableType>,
@@ -317,15 +425,19 @@ fn generate_expr_tmp(
     let result: syn::Expr = match expr {
         Expr::Int(int) => syn::parse_quote! { #int },
         Expr::Ident(identifier) => {
-            let ty = type_of_ident(&identifier)?;
+            let ty = type_of_ident(&identifier);
             let identifier = ident(&identifier);
-            if ty.is_signed != ty.rawtype_signed {
-                let from = &ty.raw_type;
-                let to = ty.rust_type();
-                let method = ident(&format!("cast_sign_{from}_{to}"));
-                tmp(rust_stmts, syn::parse_quote! { self.#method(#identifier) })
-            } else {
-                syn::parse_quote! { #identifier }
+            match ty {
+                Ok(ty) if ty.is_signed != ty.rawtype_signed => {
+                    // intel intrinsics types kinda lie sometimes.
+                    // _mm_setr_epi16 says the etype of the argument is UI16 (unsigned),
+                    // while the actual type is short (signed). Do a cast to the etype, since we used that.
+                    let from = &ty.raw_type;
+                    let to = ty.rust_type();
+                    let method = ident(&format!("cast_sign_{from}_{to}"));
+                    tmp(rust_stmts, syn::parse_quote! { self.#method(#identifier) })
+                }
+                _ => syn::parse_quote! { #identifier },
             }
         }
         Expr::Index { lhs, idx } => {
@@ -335,21 +447,48 @@ fn generate_expr_tmp(
             let Expr::Range { left, right } = *idx else {
                 bail!("idx argument must be range");
             };
-            let Expr::Int(high) = *left else {
-                bail!("lhs of range must be int");
+
+            let ty = type_of_ident(&identifier)?;
+
+            let (lane_idx, size): (syn::Expr, _) = match (*left, *right) {
+                (Expr::Int(high), Expr::Int(low)) => {
+                    if high < low {
+                        bail!("range must be HIGH:LOW, but was {high}:{low}");
+                    }
+                    let size = high - low + 1; // (inclusive)
+
+                    let lane_idx = low / ty.elem_width;
+
+                    (syn::parse_quote! { #lane_idx }, size)
+                }
+                (
+                    Expr::BinaryOp {
+                        op: BinaryOpKind::Add,
+                        lhs,
+                        rhs,
+                    },
+                    Expr::Ident(low),
+                ) => {
+                    let Expr::Ident(high_ident) = *rhs else {
+                        bail!("rhs of lhs of + indexing must be ident");
+                    };
+                    let Expr::Int(high_offset) = *lhs else {
+                        bail!("lhs of lhs of + indexing must be ident");
+                    };
+
+                    if high_ident != low {
+                        bail!("{high_ident} != {low}");
+                    }
+                    let size = high_offset + 1;
+                    let identifier = ident(&low);
+                    (syn::parse_quote! { ( #identifier / #size ) }, size)
+                }
+                _ => bail!("unknown range indexing arguments"),
             };
-            let Expr::Int(low) = *right else {
-                bail!("rhs of range must be int");
-            };
-            if high < low {
-                bail!("range must be HIGH:LOW, but was {high}:{low}");
-            }
-            let size = high - low + 1; // (inclusive)
+
             if !size.is_power_of_two() {
                 bail!("indexing size must be power of two");
             }
-
-            let ty = type_of_ident(&identifier)?;
             if size != ty.elem_width {
                 bail!(
                     "unsupported not-direct element indexing, size={size}, element size={}",
@@ -358,7 +497,6 @@ fn generate_expr_tmp(
             }
             let raw = &ty.raw_type;
             let rust_type = ty.rust_type();
-            let lane_idx = low / ty.elem_width;
 
             let identifier = ident(&identifier);
             let method = ident(&format!("get_lane_{raw}_{rust_type}"));
@@ -373,7 +511,7 @@ fn generate_expr_tmp(
             let function = ident(&heck::ToSnekCase::to_snek_case(function.as_str()));
             let args = args
                 .into_iter()
-                .map(|arg| generate_expr_tmp(rust_stmts, arg, type_of_ident))
+                .map(|arg| gen_expr_tmp(rust_stmts, arg, type_of_ident))
                 .collect::<Result<Vec<syn::Expr>>>()?;
 
             tmp(
@@ -381,7 +519,17 @@ fn generate_expr_tmp(
                 syn::parse_quote! { self.#function( #(#args),* ) },
             )
         }
-        Expr::BinaryOp { .. } => todo!(),
+        Expr::BinaryOp { op, lhs, rhs } => {
+            let lhs = gen_expr_tmp(rust_stmts, *lhs, type_of_ident)?;
+            let rhs = gen_expr_tmp(rust_stmts, *rhs, type_of_ident)?;
+
+            let token = match op {
+                BinaryOpKind::Add => quote::quote! { + },
+                BinaryOpKind::Mul => quote::quote! { * },
+            };
+
+            syn::parse_quote! { ( #lhs #token #rhs ) }
+        }
     };
     Ok(result)
 }
