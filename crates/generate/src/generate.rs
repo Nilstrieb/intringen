@@ -106,10 +106,23 @@ fn generate_intr_test(intr: &Intrinsic, rng: &mut SmallRng) -> Result<syn::ItemF
     })
 }
 
-fn generate_body_soft_arch(intr: &Intrinsic) -> Result<syn::Block> {
-    let mut rust_stmts = Vec::<syn::Stmt>::new();
+#[derive(Default)]
+struct BlockBuilder {
+    tmp_count: u64,
+    stmts: Vec<syn::Stmt>,
+}
+impl BlockBuilder {
+    fn tmp(&mut self) -> syn::Ident {
+        let r = format!("__tmp{}", self.tmp_count);
+        self.tmp_count += 1;
+        ident(&r)
+    }
+}
 
-    rust_stmts.push(syn::parse_quote! { let mut output = unsafe { std::mem::zeroed() }; });
+fn generate_body_soft_arch(intr: &Intrinsic) -> Result<syn::Block> {
+    let mut block = BlockBuilder::default();
+
+    block.stmts.push(syn::parse_quote! { let mut output = unsafe { std::mem::zeroed() }; });
 
     let name = ident(&intr.name);
 
@@ -118,19 +131,19 @@ fn generate_body_soft_arch(intr: &Intrinsic) -> Result<syn::Block> {
         syn::parse_quote! { #name }
     });
 
-    rust_stmts.push(syn::parse_quote! {
+    block.stmts.push(syn::parse_quote! {
         super::super::ValueCore.#name(&mut output, #(#args),*);
     });
 
-    rust_stmts.push(syn::Stmt::Expr(syn::parse_quote! { output }, None));
-
+    block.stmts.push(syn::Stmt::Expr(syn::parse_quote! { output }, None));
+    let block = block.stmts;
     Ok(syn::parse_quote! {
-        { #(#rust_stmts)* }
+        { #(#block)* }
     })
 }
 
 fn generate_body_test(intr: &Intrinsic, rng: &mut SmallRng) -> Result<syn::Block> {
-    let mut rust_stmts = Vec::<syn::Stmt>::new();
+    let mut block = BlockBuilder::default();
 
     let args = intr
         .parameter
@@ -140,20 +153,21 @@ fn generate_body_test(intr: &Intrinsic, rng: &mut SmallRng) -> Result<syn::Block
             let ty = map_type_to_rust(param.r#type.as_deref().unwrap());
 
             let random = random_value(ty, rng)?;
-            rust_stmts.push(syn::parse_quote! { let #name = #random; });
+            block.stmts.push(syn::parse_quote! { let #name = #random; });
             Ok(syn::parse_quote! { #name })
         })
         .collect::<Result<Vec<syn::Expr>>>()
         .wrap_err("preparing arguments")?;
 
     let name = ident(&intr.name);
-    rust_stmts.push(syn::Stmt::Expr(
+    block.stmts.push(syn::Stmt::Expr(
         syn::parse_quote!(#name( #(#args),* )),
         None,
     ));
 
+    let block = block.stmts;
     Ok(syn::parse_quote! {
-        { #(#rust_stmts)* }
+        { #(#block)* }
     })
 }
 
@@ -328,7 +342,7 @@ fn gen_block(
     opstmts: Vec<Stmt>,
     type_of_ident: &impl Fn(&str) -> Result<VariableType>,
 ) -> Result<Block> {
-    let mut rust_stmts = Vec::<syn::Stmt>::new();
+    let mut block = BlockBuilder::default();
 
     for stmt in opstmts {
         match stmt {
@@ -337,9 +351,9 @@ fn gen_block(
                 rhs,
             } => {
                 let (identifier, method, lane_idx, _) = gen_idx("set", *lhs, *idx, type_of_ident)?;
-                let expr = gen_expr_tmp(&mut rust_stmts, rhs, &type_of_ident)?.0;
+                let expr = gen_expr_tmp(&mut block, rhs, &type_of_ident)?.0;
 
-                rust_stmts.push(syn::parse_quote! {
+                block.stmts.push(syn::parse_quote! {
                     self.#method(#identifier, #lane_idx, #expr);
                 });
             }
@@ -347,7 +361,7 @@ fn gen_block(
                 lhs: Expr::Ident(lhs),
                 rhs,
             } => {
-                let rhs = gen_expr_tmp(&mut rust_stmts, rhs, type_of_ident)?.0;
+                let rhs = gen_expr_tmp(&mut block, rhs, type_of_ident)?.0;
 
                 let exists = type_of_ident(&lhs).is_ok();
 
@@ -358,7 +372,7 @@ fn gen_block(
                     syn::parse_quote! { let #lhs = #rhs; }
                 };
 
-                rust_stmts.push(stmt);
+                block.stmts.push(stmt);
             }
             Stmt::For {
                 counter,
@@ -373,27 +387,29 @@ fn gen_block(
                 let body = gen_block(body, type_of_ident)?;
                 for_.body = body;
 
-                rust_stmts.push(syn::Stmt::Expr(syn::Expr::ForLoop(for_), None));
+                block.stmts.push(syn::Stmt::Expr(syn::Expr::ForLoop(for_), None));
             }
             _ => todo!(),
         }
     }
+    let block = block.stmts;
     Ok(syn::parse_quote! {
-        { #(#rust_stmts)* }
+        { #(#block)* }
     })
 }
 
 type RustType = String;
 
 fn gen_expr_tmp(
-    rust_stmts: &mut Vec<syn::Stmt>,
+    block: &mut BlockBuilder,
     expr: Expr,
     type_of_ident: &impl Fn(&str) -> Result<VariableType>,
 ) -> Result<(syn::Expr, Option<RustType>)> {
-    let tmp = |rust_stmts: &mut Vec<syn::Stmt>, inner: syn::Expr| {
-        let stmt = syn::parse_quote! { let __tmp = #inner; };
-        rust_stmts.push(stmt);
-        syn::parse_quote! { __tmp }
+    let tmp = |block: &mut BlockBuilder, inner: syn::Expr| {
+        let var = block.tmp();
+        let stmt = syn::parse_quote! { let #var = #inner; };
+        block.stmts.push(stmt);
+        syn::parse_quote! { #var }
     };
 
     let (result, ty): (syn::Expr, _) = match expr {
@@ -410,7 +426,7 @@ fn gen_expr_tmp(
                     let to = ty.rust_type();
                     let method = ident(&format!("cast_sign_{from}_{to}"));
                     (
-                        tmp(rust_stmts, syn::parse_quote! { self.#method(#identifier) }),
+                        tmp(block, syn::parse_quote! { self.#method(#identifier) }),
                         None,
                     )
                 }
@@ -420,7 +436,7 @@ fn gen_expr_tmp(
         Expr::Index { lhs, idx } => {
             let (identifier, method, lane_idx, ty) = gen_idx("get", *lhs, *idx, type_of_ident)?;
             let expr = tmp(
-                rust_stmts,
+                block,
                 syn::parse_quote! { self.#method(#identifier, #lane_idx) },
             );
             (expr, Some(ty.rust_type()))
@@ -429,7 +445,7 @@ fn gen_expr_tmp(
         Expr::Call { function, args } => {
             let (args, arg_tys): (Vec<_>, Vec<_>) = args
                 .into_iter()
-                .map(|arg| gen_expr_tmp(rust_stmts, arg, type_of_ident))
+                .map(|arg| gen_expr_tmp(block, arg, type_of_ident))
                 .collect::<Result<Vec<(syn::Expr, Option<RustType>)>>>()?
                 .into_iter()
                 .unzip();
@@ -448,21 +464,39 @@ fn gen_expr_tmp(
 
             let function = ident(&heck::ToSnekCase::to_snek_case(function.as_str()));
             let expr = tmp(
-                rust_stmts,
+                block,
                 syn::parse_quote! { self.#function( #(#args),* ) },
             );
             (expr, None)
         }
         Expr::BinaryOp { op, lhs, rhs } => {
-            let lhs = gen_expr_tmp(rust_stmts, *lhs, type_of_ident)?.0;
-            let rhs = gen_expr_tmp(rust_stmts, *rhs, type_of_ident)?.0;
+            let (lhs, lhs_ty) = gen_expr_tmp(block, *lhs, type_of_ident)?;
+            let (rhs, rhs_ty) = gen_expr_tmp(block, *rhs, type_of_ident)?;
 
-            let token = match op {
-                BinaryOpKind::Add => quote::quote! { + },
-                BinaryOpKind::Mul => quote::quote! { * },
+            if lhs_ty != rhs_ty {
+                bail!("binary op with type mistmatch: {lhs_ty:?} != {rhs_ty:?}");
+            }
+
+            let expr = match &lhs_ty {
+                // probably a rust primitive operation
+                None => {
+                    let token = match op {
+                        BinaryOpKind::Add => quote::quote! { + },
+                        BinaryOpKind::Mul => quote::quote! { * },
+                    };
+                    syn::parse_quote! { ( #lhs #token #rhs ) }
+                }
+                Some(ty) => {
+                    let prefix = match op {
+                        BinaryOpKind::Add => "add",
+                        BinaryOpKind::Mul => "mul",
+                    };
+                    let method = ident(&format!("{prefix}_{ty}"));
+                    tmp(block, syn::parse_quote! { self.#method(#lhs, #rhs) })
+                }
             };
 
-            (syn::parse_quote! { ( #lhs #token #rhs ) }, None)
+            (expr, lhs_ty)
         }
     };
     Ok((result, ty))

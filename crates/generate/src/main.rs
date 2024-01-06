@@ -89,12 +89,30 @@ fn main() -> Result<()> {
 }
 
 const INTRINSICS_GENERATE: &[&str] = &[
+    /////
+    ///// Arithmetic
+    /////
+    "_mm_add_epi16",
+    "_mm_add_epi32",
+    "_mm_add_epi64",
+    // todo: float and __m64 stuff
+    //"_mm_adds_epi16",
+    //"_mm_adds_epi8",
+    //"_mm_adds_epu16",
+    //"_mm_adds_epu8",
+    /////
+    ///// Special Math Functions
+    /////
     "_mm_abs_epi16",
     "_mm_abs_epi8",
+    "_mm_abs_epi32",
     "_mm_setr_epi8",
     "_mm_setr_epi16",
     "_mm_setr_epi32",
     "_mm_set_epi64x",
+    /////
+    ///// Miscellaneous
+    /////
     // packing instructions
     "_mm_packus_epi16",
     "_mm_packs_epi16",
