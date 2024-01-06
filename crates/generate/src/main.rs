@@ -90,6 +90,7 @@ fn main() -> Result<()> {
 
 const INTRINSICS_GENERATE: &[&str] = &[
     "_mm_abs_epi16",
+    "_mm_abs_epi8",
     "_mm_setr_epi8",
     "_mm_setr_epi16",
     "_mm_setr_epi32",
