@@ -122,7 +122,9 @@ impl BlockBuilder {
 fn generate_body_soft_arch(intr: &Intrinsic) -> Result<syn::Block> {
     let mut block = BlockBuilder::default();
 
-    block.stmts.push(syn::parse_quote! { let mut output = unsafe { std::mem::zeroed() }; });
+    block
+        .stmts
+        .push(syn::parse_quote! { let mut output = unsafe { std::mem::zeroed() }; });
 
     let name = ident(&intr.name);
 
@@ -135,7 +137,9 @@ fn generate_body_soft_arch(intr: &Intrinsic) -> Result<syn::Block> {
         super::super::ValueCore.#name(&mut output, #(#args),*);
     });
 
-    block.stmts.push(syn::Stmt::Expr(syn::parse_quote! { output }, None));
+    block
+        .stmts
+        .push(syn::Stmt::Expr(syn::parse_quote! { output }, None));
     let block = block.stmts;
     Ok(syn::parse_quote! {
         { #(#block)* }
@@ -200,26 +204,32 @@ fn random_value(ty: &str, rng: &mut SmallRng) -> Result<syn::Expr> {
     })
 }
 
-struct VariableType {
-    is_signed: bool,
-    rawtype_signed: bool,
-    elem_width: u64,
-    #[allow(dead_code)]
-    full_width: u64,
-    raw_type: String,
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Type {
+    Vector(VectorType),
+    Scalar {
+        /// Some parameters have C types that are signed, while their `etype` is not.
+        c_is_signed: bool,
+        elemty: ElementType,
+    },
 }
 
-impl VariableType {
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct VectorType {
+    lanes: u64,
+    elem: ElementType,
+    raw_type: &'static str,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct ElementType {
+    is_signed: bool,
+    width: u64,
+}
+
+impl Type {
     fn of(etype: &str, ty: &str) -> Result<Self> {
-        let (rawtype_signed, full_width) = match map_type_to_rust(ty) {
-            "__m128i" => (false, 128),
-            "i8" => (true, 8),
-            "i16" => (true, 16),
-            "i32" => (true, 32),
-            "i64" => (true, 64),
-            _ => bail!("unknown type: {ty}"),
-        };
-        let (is_signed, elem_width) = match etype {
+        let (etype_signed, etype_width) = match etype {
             "SI8" => (true, 8),
             "SI16" => (true, 16),
             "SI32" => (true, 32),
@@ -229,28 +239,65 @@ impl VariableType {
             "UI64" => (false, 64),
             _ => bail!("unknown element type: {etype}"),
         };
-        Ok(Self {
-            is_signed,
-            rawtype_signed,
-            full_width,
-            elem_width,
-            raw_type: map_type_to_rust(ty).to_owned(),
+        let elem = ElementType {
+            is_signed: etype_signed,
+            width: etype_width,
+        };
+
+        let scalar = |sign| Type::Scalar {
+            c_is_signed: sign,
+            elemty: elem,
+        };
+
+        Ok(match ty {
+            "__m128i" => Type::Vector(VectorType {
+                lanes: 128 / etype_width,
+                elem,
+                raw_type: "__m128i",
+            }),
+            "char" => scalar(true),
+            "short" => scalar(true),
+            "int" => scalar(true),
+            "__int64" => scalar(true),
+            _ => bail!("unknown type: {ty}"),
         })
     }
 
     fn rust_type(&self) -> String {
+        match self {
+            Type::Vector(v) => v.raw_type.to_owned(),
+            Type::Scalar { elemty, .. } => elemty.rust_type(),
+        }
+    }
+
+    fn expect_vector(&self) -> VectorType {
+        let Self::Vector(ty) = *self else {
+            panic!("expected vector, found scalar");
+        };
+        ty
+    }
+    fn expect_scalar(&self) -> ElementType {
+        let Self::Scalar { elemty, .. } = *self else {
+            panic!("expected scalar, found vector");
+        };
+        elemty
+    }
+}
+
+impl ElementType {
+    fn rust_type(&self) -> String {
         let pre = if self.is_signed { 'i' } else { 'u' };
-        format!("{pre}{}", self.elem_width)
+        format!("{pre}{}", self.width)
     }
 }
 
 fn generate_body(instr: &Intrinsic) -> Result<syn::Block> {
     let opstmts = parse_op(instr)?;
 
-    let type_of_ident = |ident: &str| -> Result<VariableType> {
+    let type_of_ident = |ident: &str| -> Result<Type> {
         for param in &instr.parameter {
             if param.varname.as_deref() == Some(ident) {
-                return VariableType::of(
+                return Type::of(
                     param.etype.as_deref().ok_or_eyre("no param etype")?,
                     param.r#type.as_deref().ok_or_eyre("no param type")?,
                 );
@@ -258,7 +305,7 @@ fn generate_body(instr: &Intrinsic) -> Result<syn::Block> {
         }
 
         if instr.ret.varname.as_deref() == Some(ident) {
-            return VariableType::of(
+            return Type::of(
                 instr.ret.etype.as_deref().ok_or_eyre("no param etype")?,
                 instr.ret.r#type.as_deref().ok_or_eyre("no param type")?,
             );
@@ -274,8 +321,8 @@ fn gen_idx(
     method_prefix: &str,
     lhs: Expr,
     idx: Expr,
-    type_of_ident: &impl Fn(&str) -> Result<VariableType>,
-) -> Result<(syn::Ident, syn::Ident, syn::Expr, VariableType)> {
+    type_of_ident: &impl Fn(&str) -> Result<Type>,
+) -> Result<(syn::Ident, syn::Ident, syn::Expr, VectorType)> {
     let Expr::Ident(identifier) = lhs else {
         bail!("lhs of indexing must be identifier");
     };
@@ -283,7 +330,7 @@ fn gen_idx(
         bail!("idx argument must be range");
     };
 
-    let ty = type_of_ident(&identifier)?;
+    let ty = type_of_ident(&identifier)?.expect_vector();
 
     let (lane_idx, size): (syn::Expr, _) = match (*left, *right) {
         (Expr::Int(high), Expr::Int(low)) => {
@@ -292,7 +339,7 @@ fn gen_idx(
             }
             let size = high - low + 1; // (inclusive)
 
-            let lane_idx = low / ty.elem_width;
+            let lane_idx = low / ty.elem.width;
 
             (syn::parse_quote! { #lane_idx }, size)
         }
@@ -324,24 +371,23 @@ fn gen_idx(
     if !size.is_power_of_two() {
         bail!("indexing size must be power of two");
     }
-    if size != ty.elem_width {
+    if size != ty.elem.width {
         bail!(
             "unsupported not-direct element indexing, size={size}, element size={}",
-            ty.elem_width
+            ty.elem.width
         );
     }
-    let raw = &ty.raw_type;
-    let rust_type = ty.rust_type();
 
     let identifier = ident(&identifier);
-    let method = ident(&format!("{method_prefix}_lane_{raw}_{rust_type}"));
+    let method = ident(&format!(
+        "{method_prefix}_lane_{}_{}",
+        ty.raw_type,
+        ty.elem.rust_type()
+    ));
     Ok((identifier, method, lane_idx, ty))
 }
 
-fn gen_block(
-    opstmts: Vec<Stmt>,
-    type_of_ident: &impl Fn(&str) -> Result<VariableType>,
-) -> Result<Block> {
+fn gen_block(opstmts: Vec<Stmt>, type_of_ident: &impl Fn(&str) -> Result<Type>) -> Result<Block> {
     let mut block = BlockBuilder::default();
 
     for stmt in opstmts {
@@ -387,7 +433,9 @@ fn gen_block(
                 let body = gen_block(body, type_of_ident)?;
                 for_.body = body;
 
-                block.stmts.push(syn::Stmt::Expr(syn::Expr::ForLoop(for_), None));
+                block
+                    .stmts
+                    .push(syn::Stmt::Expr(syn::Expr::ForLoop(for_), None));
             }
             _ => todo!(),
         }
@@ -398,13 +446,11 @@ fn gen_block(
     })
 }
 
-type RustType = String;
-
 fn gen_expr_tmp(
     block: &mut BlockBuilder,
     expr: Expr,
-    type_of_ident: &impl Fn(&str) -> Result<VariableType>,
-) -> Result<(syn::Expr, Option<RustType>)> {
+    type_of_ident: &impl Fn(&str) -> Result<Type>,
+) -> Result<(syn::Expr, Option<Type>)> {
     let tmp = |block: &mut BlockBuilder, inner: syn::Expr| {
         let var = block.tmp();
         let stmt = syn::parse_quote! { let #var = #inner; };
@@ -418,12 +464,19 @@ fn gen_expr_tmp(
             let ty = type_of_ident(&identifier);
             let identifier = ident(&identifier);
             match ty {
-                Ok(ty) if ty.is_signed != ty.rawtype_signed => {
+                Ok(Type::Scalar {
+                    c_is_signed,
+                    elemty,
+                }) if elemty.is_signed != c_is_signed => {
                     // intel intrinsics types kinda lie sometimes.
                     // _mm_setr_epi16 says the etype of the argument is UI16 (unsigned),
                     // while the actual type is short (signed). Do a cast to the etype, since we used that.
-                    let from = &ty.raw_type;
-                    let to = ty.rust_type();
+                    let from = ElementType {
+                        is_signed: c_is_signed,
+                        width: elemty.width,
+                    }
+                    .rust_type();
+                    let to = elemty.rust_type();
                     let method = ident(&format!("cast_sign_{from}_{to}"));
                     (
                         tmp(block, syn::parse_quote! { self.#method(#identifier) }),
@@ -439,20 +492,26 @@ fn gen_expr_tmp(
                 block,
                 syn::parse_quote! { self.#method(#identifier, #lane_idx) },
             );
-            (expr, Some(ty.rust_type()))
+            (
+                expr,
+                Some(Type::Scalar {
+                    c_is_signed: ty.elem.is_signed,
+                    elemty: ty.elem,
+                }),
+            )
         }
         Expr::Range { .. } => todo!(),
         Expr::Call { function, args } => {
             let (args, arg_tys): (Vec<_>, Vec<_>) = args
                 .into_iter()
                 .map(|arg| gen_expr_tmp(block, arg, type_of_ident))
-                .collect::<Result<Vec<(syn::Expr, Option<RustType>)>>>()?
+                .collect::<Result<Vec<(syn::Expr, _)>>>()?
                 .into_iter()
                 .unzip();
 
             let argtype = arg_tys
                 .into_iter()
-                .map(|argty| argty.expect("argument type unknown for polymorphic function"))
+                .map(|argty| argty.unwrap().rust_type())
                 .collect::<Vec<_>>()
                 .join("_");
 
@@ -463,10 +522,7 @@ fn gen_expr_tmp(
             };
 
             let function = ident(&heck::ToSnekCase::to_snek_case(function.as_str()));
-            let expr = tmp(
-                block,
-                syn::parse_quote! { self.#function( #(#args),* ) },
-            );
+            let expr = tmp(block, syn::parse_quote! { self.#function( #(#args),* ) });
             (expr, None)
         }
         Expr::BinaryOp { op, lhs, rhs } => {
@@ -479,6 +535,7 @@ fn gen_expr_tmp(
 
             let expr = match &lhs_ty {
                 // probably a rust primitive operation
+                // this is extremely wonky....., but rustc typeck will complain if we get this wrong
                 None => {
                     let token = match op {
                         BinaryOpKind::Add => quote::quote! { + },
@@ -491,8 +548,19 @@ fn gen_expr_tmp(
                         BinaryOpKind::Add => "add",
                         BinaryOpKind::Mul => "mul",
                     };
-                    let method = ident(&format!("{prefix}_{ty}"));
-                    tmp(block, syn::parse_quote! { self.#method(#lhs, #rhs) })
+
+                    let ty = ty.expect_scalar();
+                    let method = ident(&format!(
+                        "ext_{}_{}64",
+                        ty.rust_type(),
+                        if ty.is_signed { "s" } else { "u" }
+                    ));
+                    let lhs_ext = tmp(block, syn::parse_quote! { self.#method(#lhs) });
+                    let rhs_ext = tmp(block, syn::parse_quote! { self.#method(#rhs) });
+
+                    // TODO: EXTEND
+                    let method = ident(&format!("{prefix}_64"));
+                    tmp(block, syn::parse_quote! { self.#method(#lhs_ext, #rhs_ext) })
                 }
             };
 

@@ -44,11 +44,6 @@ pub trait Core {
     fn saturate_u8(&mut self, elem: Self::i16) -> Self::u8;
     fn saturate16(&mut self, elem: Self::i32) -> Self::i16;
     fn saturate_u16(&mut self, elem: Self::i32) -> Self::u16;
-    fn abs_i8(&mut self, elem: Self::i8) -> Self::u8;
-    fn abs_i16(&mut self, elem: Self::i16) -> Self::u16;
-    fn abs_i32(&mut self, elem: Self::i32) -> Self::u32;
-    fn add_u16(&mut self, lhs: Self::u16, rhs: Self::u16) -> Self::u16;
-    fn add_u32(&mut self, lhs: Self::u32, rhs: Self::u32) -> Self::u32;
     fn add_u64(&mut self, lhs: Self::u64, rhs: Self::u64) -> Self::u64;
 }
 
@@ -86,7 +81,6 @@ impl Core for ValueCore {
     }
 
     ////// GET LANE
-
     fn get_lane___m128i_u8(&mut self, value: Self::__m128i, idx: u64) -> Self::u8 {
         value[idx as usize]
     }
@@ -199,21 +193,6 @@ impl Core for ValueCore {
     fn saturate_u16(&mut self, elem: Self::i32) -> Self::u16 {
         let clamp = elem.clamp(0, u16::MAX as i32);
         clamp as u16
-    }
-    fn abs_i8(&mut self, elem: Self::i8) -> Self::u8 {
-        elem.abs() as u8
-    }
-    fn abs_i16(&mut self, elem: Self::i16) -> Self::u16 {
-        elem.abs() as u16
-    }
-    fn abs_i32(&mut self, elem: Self::i32) -> Self::u32 {
-        elem.abs() as u32
-    }
-    fn add_u16(&mut self, lhs: Self::u16, rhs: Self::u16) -> Self::u16 {
-        lhs.wrapping_add(rhs)
-    }
-    fn add_u32(&mut self, lhs: Self::u32, rhs: Self::u32) -> Self::u32 {
-        lhs.wrapping_add(rhs)
     }
     fn add_u64(&mut self, lhs: Self::u64, rhs: Self::u64) -> Self::u64 {
         lhs.wrapping_add(rhs)

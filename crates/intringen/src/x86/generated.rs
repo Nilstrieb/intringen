@@ -11,8 +11,10 @@ pub trait Intrinsics: super::Core {
             let i = (j * 16u64);
             let __tmp0 = self.get_lane___m128i_u16(a, (i / 16u64));
             let __tmp1 = self.get_lane___m128i_u16(b, (i / 16u64));
-            let __tmp2 = self.add_u16(__tmp0, __tmp1);
-            self.set_lane___m128i_u16(dst, (i / 16u64), __tmp2);
+            let __tmp2 = self.ext_u16_u64(__tmp0);
+            let __tmp3 = self.ext_u16_u64(__tmp1);
+            let __tmp4 = self.add_64(__tmp2, __tmp3);
+            self.set_lane___m128i_u16(dst, (i / 16u64), __tmp4);
         }
     }
     fn _mm_add_epi32(
@@ -25,8 +27,10 @@ pub trait Intrinsics: super::Core {
             let i = (j * 32u64);
             let __tmp0 = self.get_lane___m128i_u32(a, (i / 32u64));
             let __tmp1 = self.get_lane___m128i_u32(b, (i / 32u64));
-            let __tmp2 = self.add_u32(__tmp0, __tmp1);
-            self.set_lane___m128i_u32(dst, (i / 32u64), __tmp2);
+            let __tmp2 = self.ext_u32_u64(__tmp0);
+            let __tmp3 = self.ext_u32_u64(__tmp1);
+            let __tmp4 = self.add_64(__tmp2, __tmp3);
+            self.set_lane___m128i_u32(dst, (i / 32u64), __tmp4);
         }
     }
     fn _mm_add_epi64(
@@ -39,8 +43,27 @@ pub trait Intrinsics: super::Core {
             let i = (j * 64u64);
             let __tmp0 = self.get_lane___m128i_u64(a, (i / 64u64));
             let __tmp1 = self.get_lane___m128i_u64(b, (i / 64u64));
-            let __tmp2 = self.add_u64(__tmp0, __tmp1);
-            self.set_lane___m128i_u64(dst, (i / 64u64), __tmp2);
+            let __tmp2 = self.ext_u64_u64(__tmp0);
+            let __tmp3 = self.ext_u64_u64(__tmp1);
+            let __tmp4 = self.add_64(__tmp2, __tmp3);
+            self.set_lane___m128i_u64(dst, (i / 64u64), __tmp4);
+        }
+    }
+    fn _mm_adds_epi16(
+        &mut self,
+        dst: &mut Self::__m128i,
+        a: Self::__m128i,
+        b: Self::__m128i,
+    ) {
+        for j in 0u64..=7u64 {
+            let i = (j * 16u64);
+            let __tmp0 = self.get_lane___m128i_i16(a, (i / 16u64));
+            let __tmp1 = self.get_lane___m128i_i16(b, (i / 16u64));
+            let __tmp2 = self.ext_i16_s64(__tmp0);
+            let __tmp3 = self.ext_i16_s64(__tmp1);
+            let __tmp4 = self.add_64(__tmp2, __tmp3);
+            let __tmp5 = self.saturate16(__tmp4);
+            self.set_lane___m128i_u16(dst, (i / 16u64), __tmp5);
         }
     }
     fn _mm_set_epi64x(&mut self, dst: &mut Self::__m128i, e1: Self::i64, e0: Self::i64) {
@@ -363,6 +386,11 @@ pub mod soft_arch {
         super::super::ValueCore._mm_add_epi64(&mut output, a, b);
         output
     }
+    pub fn _mm_adds_epi16(a: __m128i, b: __m128i) -> __m128i {
+        let mut output = unsafe { std::mem::zeroed() };
+        super::super::ValueCore._mm_adds_epi16(&mut output, a, b);
+        output
+    }
     pub fn _mm_set_epi64x(e1: i64, e0: i64) -> __m128i {
         let mut output = unsafe { std::mem::zeroed() };
         super::super::ValueCore._mm_set_epi64x(&mut output, e1, e0);
@@ -496,92 +524,101 @@ pub mod tests {
         }
     }
     #[test]
+    fn _mm_adds_epi16() {
+        hard_soft_same_128! {
+            { let a = _mm_setr_epi16(9149i16, 18759i16, 30885i16, - 3879i16, 21600i16,
+            24454i16, 23524i16, 10765i16); let b = _mm_setr_epi16(32539i16, 26890i16, -
+            3892i16, 4386i16, 18704i16, 8253i16, - 29217i16, 32013i16); _mm_adds_epi16(a,
+            b) }
+        }
+    }
+    #[test]
     fn _mm_set_epi64x() {
         hard_soft_same_128! {
-            { let e1 = - 1407335585757566417i64; let e0 = 6810649108177377822i64;
+            { let e1 = - 589376611403916251i64; let e0 = 3902096933100612535i64;
             _mm_set_epi64x(e1, e0) }
         }
     }
     #[test]
     fn _mm_setr_epi32() {
         hard_soft_same_128! {
-            { let e3 = 1012103333i32; let e2 = - 1086525223i32; let e1 = - 1399630752i32;
-            let e0 = - 395616378i32; _mm_setr_epi32(e3, e2, e1, e0) }
+            { let e3 = 1973077588i32; let e2 = 650443732i32; let e1 = - 2133091191i32;
+            let e0 = - 352824609i32; _mm_setr_epi32(e3, e2, e1, e0) }
         }
     }
     #[test]
     fn _mm_setr_epi16() {
         hard_soft_same_128! {
-            { let e7 = 23524i16; let e6 = 10765i16; let e5 = 32539i16; let e4 = 26890i16;
-            let e3 = - 3892i16; let e2 = 4386i16; let e1 = 18704i16; let e0 = 8253i16;
-            _mm_setr_epi16(e7, e6, e5, e4, e3, e2, e1, e0) }
+            { let e7 = - 31392i16; let e6 = - 14015i16; let e5 = - 32565i16; let e4 = -
+            11312i16; let e3 = - 4934i16; let e2 = - 19283i16; let e1 = - 27533i16; let
+            e0 = - 9939i16; _mm_setr_epi16(e7, e6, e5, e4, e3, e2, e1, e0) }
         }
     }
     #[test]
     fn _mm_setr_epi8() {
         hard_soft_same_128! {
-            { let e15 = - 33i8; let e14 = 13i8; let e13 = 24i8; let e12 = 124i8; let e11
-            = 84i8; let e10 = - 44i8; let e9 = - 119i8; let e8 = - 33i8; let e7 = 96i8;
-            let e6 = 65i8; let e5 = - 53i8; let e4 = - 48i8; let e3 = - 70i8; let e2 = -
-            83i8; let e1 = 115i8; let e0 = 45i8; _mm_setr_epi8(e15, e14, e13, e12, e11,
+            { let e15 = - 46i8; let e14 = - 46i8; let e13 = - 125i8; let e12 = 81i8; let
+            e11 = - 56i8; let e10 = - 75i8; let e9 = 54i8; let e8 = 109i8; let e7 = 29i8;
+            let e6 = 41i8; let e5 = - 21i8; let e4 = 39i8; let e3 = 89i8; let e2 = -
+            36i8; let e1 = - 88i8; let e0 = 11i8; _mm_setr_epi8(e15, e14, e13, e12, e11,
             e10, e9, e8, e7, e6, e5, e4, e3, e2, e1, e0) }
         }
     }
     #[test]
     fn _mm_packs_epi16() {
         hard_soft_same_128! {
-            { let a = _mm_setr_epi16(- 9518i16, - 29742i16, 10115i16, 1617i16, 13256i16,
-            - 2379i16, 19254i16, 7533i16); let b = _mm_setr_epi16(- 17891i16, 30761i16,
-            2539i16, 4135i16, 26713i16, 16348i16, - 21336i16, 3595i16);
-            _mm_packs_epi16(a, b) }
+            { let a = _mm_setr_epi16(6572i16, - 54i16, 10431i16, - 4614i16, - 1911i16,
+            17046i16, - 12772i16, - 28109i16); let b = _mm_setr_epi16(7409i16, -
+            30136i16, - 28607i16, - 1975i16, 23451i16, - 32657i16, - 28920i16, -
+            2519i16); _mm_packs_epi16(a, b) }
         }
     }
     #[test]
     fn _mm_packs_epi32() {
         hard_soft_same_128! {
-            { let a = _mm_setr_epi16(6572i16, - 54i16, 10431i16, - 4614i16, - 1911i16,
-            17046i16, - 12772i16, - 28109i16); let b = _mm_setr_epi16(7409i16, -
-            30136i16, - 28607i16, - 1975i16, 23451i16, - 32657i16, - 28920i16, -
-            2519i16); _mm_packs_epi32(a, b) }
+            { let a = _mm_setr_epi16(- 7284i16, 7023i16, - 31688i16, 4770i16, 28846i16, -
+            13549i16, 13781i16, - 10474i16); let b = _mm_setr_epi16(12050i16, - 782i16,
+            8840i16, 8344i16, 9169i16, 303i16, - 6879i16, - 28778i16); _mm_packs_epi32(a,
+            b) }
         }
     }
     #[test]
     fn _mm_packus_epi16() {
         hard_soft_same_128! {
-            { let a = _mm_setr_epi16(- 7284i16, 7023i16, - 31688i16, 4770i16, 28846i16, -
-            13549i16, 13781i16, - 10474i16); let b = _mm_setr_epi16(12050i16, - 782i16,
-            8840i16, 8344i16, 9169i16, 303i16, - 6879i16, - 28778i16);
+            { let a = _mm_setr_epi16(- 11301i16, 10802i16, 18689i16, 12867i16, 18892i16,
+            20484i16, - 4754i16, - 28358i16); let b = _mm_setr_epi16(27422i16, -
+            14791i16, - 32685i16, - 4504i16, - 19709i16, 1090i16, 1898i16, 11224i16);
             _mm_packus_epi16(a, b) }
         }
     }
     #[test]
     fn _mm_packus_epi32() {
         hard_soft_same_128! {
-            { let a = _mm_setr_epi16(- 11301i16, 10802i16, 18689i16, 12867i16, 18892i16,
-            20484i16, - 4754i16, - 28358i16); let b = _mm_setr_epi16(27422i16, -
-            14791i16, - 32685i16, - 4504i16, - 19709i16, 1090i16, 1898i16, 11224i16);
+            { let a = _mm_setr_epi16(27569i16, 26879i16, 11743i16, 1055i16, 5327i16, -
+            1490i16, - 6436i16, 1056i16); let b = _mm_setr_epi16(- 16744i16, 28829i16,
+            23772i16, - 31202i16, 9764i16, 16146i16, 29119i16, 1909i16);
             _mm_packus_epi32(a, b) }
         }
     }
     #[test]
     fn _mm_abs_epi8() {
         hard_soft_same_128! {
-            { let a = _mm_setr_epi16(27569i16, 26879i16, 11743i16, 1055i16, 5327i16, -
-            1490i16, - 6436i16, 1056i16); _mm_abs_epi8(a) }
+            { let a = _mm_setr_epi16(- 4803i16, - 23533i16, - 22862i16, - 25389i16, -
+            16117i16, - 21476i16, 30010i16, - 15743i16); _mm_abs_epi8(a) }
         }
     }
     #[test]
     fn _mm_abs_epi16() {
         hard_soft_same_128! {
-            { let a = _mm_setr_epi16(- 16744i16, 28829i16, 23772i16, - 31202i16, 9764i16,
-            16146i16, 29119i16, 1909i16); _mm_abs_epi16(a) }
+            { let a = _mm_setr_epi16(- 20689i16, - 11653i16, 22142i16, - 16597i16,
+            28514i16, - 15735i16, - 6977i16, - 5493i16); _mm_abs_epi16(a) }
         }
     }
     #[test]
     fn _mm_abs_epi32() {
         hard_soft_same_128! {
-            { let a = _mm_setr_epi16(- 4803i16, - 23533i16, - 22862i16, - 25389i16, -
-            16117i16, - 21476i16, 30010i16, - 15743i16); _mm_abs_epi32(a) }
+            { let a = _mm_setr_epi16(17059i16, 15712i16, 32305i16, - 23877i16, 29411i16,
+            - 3868i16, - 10128i16, 25298i16); _mm_abs_epi32(a) }
         }
     }
 }
