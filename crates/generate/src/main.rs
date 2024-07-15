@@ -92,11 +92,11 @@ const INTRINSICS_GENERATE: &[&str] = &[
     /////
     ///// Arithmetic
     /////
-    "_mm_add_epi16",
-    "_mm_add_epi32",
-    "_mm_add_epi64",
+    // "_mm_add_epi16",
+    // "_mm_add_epi32",
+    // "_mm_add_epi64",
     // todo: float and __m64 stuff
-    "_mm_adds_epi16",
+    // "_mm_adds_epi16",
     //"_mm_adds_epi8",
     //"_mm_adds_epu16",
     //"_mm_adds_epu8",

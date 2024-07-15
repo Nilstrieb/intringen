@@ -130,7 +130,7 @@ fn generate_body_soft_arch(intr: &Intrinsic) -> Result<syn::Block> {
 
     let args = intr.parameter.iter().map(|param| -> syn::Expr {
         let name = ident_opt_s(&param.varname).unwrap();
-        syn::parse_quote! { #name }
+        syn::parse_quote! { #name as _ }
     });
 
     block.stmts.push(syn::parse_quote! {
@@ -200,54 +200,49 @@ fn random_value(ty: &str, rng: &mut SmallRng) -> Result<syn::Expr> {
                 _mm_setr_epi16(#(#args),*)
             }
         }
-        _ => bail!("unknown type: {ty}"),
+        _ => bail!("unknown type for random value: {ty}"),
     })
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Type {
     Vector(VectorType),
-    Scalar {
-        /// Some parameters have C types that are signed, while their `etype` is not.
-        c_is_signed: bool,
-        elemty: ElementType,
-    },
+    Scalar { elemty: ElementType },
 }
 
+/// A SIMD vector type like `16xi8 (__m128i)`
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct VectorType {
+    /// The amount of lanes, `16` in `16xi8 (__m128i)`.
     lanes: u64,
+    /// The type of a single lane, `i8` in `16xi8 (__m128i)`.
     elem: ElementType,
+    /// The raw Rust/C type, `__m128i` in `16xi8 (__m128i)`.
     raw_type: &'static str,
 }
 
+/// A single element in a vector.
+/// For example in `16xi8 (__m128i)`, it would be `i8` (we do not care about signedness).
 #[derive(Clone, Copy, PartialEq, Debug)]
 struct ElementType {
-    is_signed: bool,
     width: u64,
 }
 
 impl Type {
     fn of(etype: &str, ty: &str) -> Result<Self> {
-        let (etype_signed, etype_width) = match etype {
-            "SI8" => (true, 8),
-            "SI16" => (true, 16),
-            "SI32" => (true, 32),
-            "UI8" => (false, 8),
-            "UI16" => (false, 16),
-            "UI32" => (false, 32),
-            "UI64" => (false, 64),
+        let etype_width = match etype {
+            "SI8" => 8,
+            "SI16" => 16,
+            "SI32" => 32,
+            "UI8" => 8,
+            "UI16" => 16,
+            "UI32" => 32,
+            "UI64" => 64,
             _ => bail!("unknown element type: {etype}"),
         };
-        let elem = ElementType {
-            is_signed: etype_signed,
-            width: etype_width,
-        };
+        let elem = ElementType { width: etype_width };
 
-        let scalar = |sign| Type::Scalar {
-            c_is_signed: sign,
-            elemty: elem,
-        };
+        let scalar = Type::Scalar { elemty: elem };
 
         Ok(match ty {
             "__m128i" => Type::Vector(VectorType {
@@ -255,10 +250,10 @@ impl Type {
                 elem,
                 raw_type: "__m128i",
             }),
-            "char" => scalar(true),
-            "short" => scalar(true),
-            "int" => scalar(true),
-            "__int64" => scalar(true),
+            "char" => scalar,
+            "short" => scalar,
+            "int" => scalar,
+            "__int64" => scalar,
             _ => bail!("unknown type: {ty}"),
         })
     }
@@ -276,18 +271,11 @@ impl Type {
         };
         ty
     }
-    fn expect_scalar(&self) -> ElementType {
-        let Self::Scalar { elemty, .. } = *self else {
-            panic!("expected scalar, found vector");
-        };
-        elemty
-    }
 }
 
 impl ElementType {
     fn rust_type(&self) -> String {
-        let pre = if self.is_signed { 'i' } else { 'u' };
-        format!("{pre}{}", self.width)
+        format!("u{}", self.width)
     }
 }
 
@@ -461,30 +449,8 @@ fn gen_expr_tmp(
     let (result, ty): (syn::Expr, _) = match expr {
         Expr::Int(int) => (syn::parse_quote! { #int }, None),
         Expr::Ident(identifier) => {
-            let ty = type_of_ident(&identifier);
             let identifier = ident(&identifier);
-            match ty {
-                Ok(Type::Scalar {
-                    c_is_signed,
-                    elemty,
-                }) if elemty.is_signed != c_is_signed => {
-                    // intel intrinsics types kinda lie sometimes.
-                    // _mm_setr_epi16 says the etype of the argument is UI16 (unsigned),
-                    // while the actual type is short (signed). Do a cast to the etype, since we used that.
-                    let from = ElementType {
-                        is_signed: c_is_signed,
-                        width: elemty.width,
-                    }
-                    .rust_type();
-                    let to = elemty.rust_type();
-                    let method = ident(&format!("cast_sign_{from}_{to}"));
-                    (
-                        tmp(block, syn::parse_quote! { self.#method(#identifier) }),
-                        None,
-                    )
-                }
-                _ => (syn::parse_quote! { #identifier }, None),
-            }
+            (syn::parse_quote! { #identifier }, None)
         }
         Expr::Index { lhs, idx } => {
             let (identifier, method, lane_idx, ty) = gen_idx("get", *lhs, *idx, type_of_ident)?;
@@ -492,13 +458,7 @@ fn gen_expr_tmp(
                 block,
                 syn::parse_quote! { self.#method(#identifier, #lane_idx) },
             );
-            (
-                expr,
-                Some(Type::Scalar {
-                    c_is_signed: ty.elem.is_signed,
-                    elemty: ty.elem,
-                }),
-            )
+            (expr, Some(Type::Scalar { elemty: ty.elem }))
         }
         Expr::Range { .. } => todo!(),
         Expr::Call { function, args } => {
@@ -543,24 +503,25 @@ fn gen_expr_tmp(
                     };
                     syn::parse_quote! { ( #lhs #token #rhs ) }
                 }
-                Some(ty) => {
+                Some(_ty) => {
                     let prefix = match op {
                         BinaryOpKind::Add => "add",
                         BinaryOpKind::Mul => "mul",
                     };
 
-                    let ty = ty.expect_scalar();
-                    let method = ident(&format!(
-                        "ext_{}_{}64",
-                        ty.rust_type(),
-                        if ty.is_signed { "s" } else { "u" }
-                    ));
-                    let lhs_ext = tmp(block, syn::parse_quote! { self.#method(#lhs) });
-                    let rhs_ext = tmp(block, syn::parse_quote! { self.#method(#rhs) });
+                    // TODO: EXTEND somehow possibly??? ugh.
 
-                    // TODO: EXTEND
+                    //let ty = ty.expect_scalar();
+                    //let method = ident(&format!(
+                    //    "ext_{}_u64",
+                    //    ty.rust_type(),
+                    //    if ty.is_signed { "s" } else { "u" }
+                    //));
+                    //let lhs_ext = tmp(block, syn::parse_quote! { self.#method(#lhs) });
+                    //let rhs_ext = tmp(block, syn::parse_quote! { self.#method(#rhs) });
+
                     let method = ident(&format!("{prefix}_64"));
-                    tmp(block, syn::parse_quote! { self.#method(#lhs_ext, #rhs_ext) })
+                    tmp(block, syn::parse_quote! { self.#method(#lhs, #rhs) })
                 }
             };
 
@@ -590,7 +551,7 @@ fn signature(intr: &Intrinsic, body: syn::Block) -> Result<syn::TraitItem> {
     let name = ident(&intr.name);
 
     let ret_name = ident_opt_s(&intr.ret.varname)?;
-    let ret_ty = ident(map_type_to_rust(intr.ret.r#type.as_ref().unwrap()));
+    let ret_ty = ident(map_type_to_rust_unsigned(intr.ret.r#type.as_ref().unwrap()));
 
     let args = [
         syn::parse_quote! {  &mut self  },
@@ -599,7 +560,7 @@ fn signature(intr: &Intrinsic, body: syn::Block) -> Result<syn::TraitItem> {
     .into_iter()
     .chain(intr.parameter.iter().map(|param| -> syn::FnArg {
         let varname = ident_opt_s(&param.varname).unwrap();
-        let ty = ident(map_type_to_rust(param.r#type.as_ref().unwrap()));
+        let ty = ident(map_type_to_rust_unsigned(param.r#type.as_ref().unwrap()));
 
         syn::parse_quote! { #varname: Self::#ty }
     }));
@@ -629,6 +590,17 @@ fn map_type_to_rust(ty: &str) -> &str {
         "short" => "i16",
         "int" => "i32",
         "__int64" => "i64",
+        ty => panic!("unknown type: {ty}"),
+    }
+}
+
+fn map_type_to_rust_unsigned(ty: &str) -> &str {
+    match ty {
+        "__m128i" => ty,
+        "char" => "u8",
+        "short" => "u16",
+        "int" => "u32",
+        "__int64" => "u64",
         ty => panic!("unknown type: {ty}"),
     }
 }
